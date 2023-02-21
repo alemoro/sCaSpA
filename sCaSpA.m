@@ -119,6 +119,8 @@ classdef sCaSpA < matlab.apps.AppBase
         curSlice % The timelapse slice that is visible
         curTime % a line for the current position on the plot
         nChannel % number of DIC channels
+        newChange = false; % to detect if there are changes that needs to be saved
+        bZoom = false;
         keepColor = [219 68 55;...      % Google RED
                     15 157 88;...       % Google GREEN
                     66 133 244;...      % Google BLUE
@@ -168,7 +170,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Populate the imgT
                 imgFltr = find(~dicFltr);
                 tempT = cell(numel(imgFltr)+1, 15);
-                tempT(1,:) = {'Filename', 'CellID', 'Week', 'CoverslipID', 'RecID', 'Condition', 'ExperimentID', 'ImgProperties', 'ImgByteStrip', 'RawIntensity', 'FF0Intensity', 'DetrendedData', 'SpikeLocations', 'SpikeIntensities', 'SpikeWidths'};
+                tempT(1,:) = {'Filename', 'CellID', 'Week', 'CoverslipID', 'RecID', 'Condition', 'ExperimentID', 'ImgProperties', 'ImgByteStrip', 'RawIntensity', 'FF0Intensity', 'DetrendData', 'SpikeLocations', 'SpikeIntensities', 'SpikeWidths'};
                 tempT(2:end,1) = fullfile({imgFiles(imgFltr).folder}, {imgFiles(imgFltr).name});
                 tempT(2:end,2) = cellfun(@(x) x(1:end-4), {imgFiles(imgFltr).name}, 'UniformOutput', false);
                 imgIDs = nameParts(imgFltr);
@@ -221,7 +223,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 %detrendData(app);
                 toggleInteractions(app, 'Loaded');
                 %ListImagesChange(app)
-                
+                app.newChange = true;
             else
                 togglePointer(app)
                 return
@@ -230,9 +232,110 @@ classdef sCaSpA < matlab.apps.AppBase
         end
         
         function FileMenuLoadSelected(app)
+            [fileName, filePath] = uigetfile(app.options.LastPath, 'Select Network File');
+            if filePath ~= 0
+                % Save the path to the settings
+                app.options.LastPath = filePath;
+                togglePointer(app)
+                networkFiles = load(fullfile(filePath, fileName));
+                if isfield(networkFiles, 'options')
+                    app.options = networkFiles.options;
+                end
+                if isfield(networkFiles, 'dicT')
+                    if isempty(app.dicT)
+                        app.dicT = networkFiles.dicT;
+                    else
+                        app.dicT = [app.dicT; networkFiles.dicT];
+                    end
+                end
+                if isfield(networkFiles, 'imgT')
+                    if isempty(app.imgT)
+                        app.imgT = networkFiles.imgT;
+                    else
+                        if numel(app.imgT.Properties.VariableNames) ~= numel(networkFiles.imgT.Properties.VariableNames)
+                            % We need to add columns
+                            missVars = setdiff(app.imgT.Properties.VariableNames, networkFiles.imgT.Properties.VariableNames);
+                            for missVar = missVars
+                                networkFiles.imgT = addvars(networkFiles.imgT, nan(size(networkFiles.imgT,1), 1), 'NewVariableNames',missVar);
+                            end
+                        end
+                        app.imgT = [app.imgT; networkFiles.imgT];
+                    end
+                end
+                togglePointer(app)
+            end
+            % Populate tehe DIC dropdown menu and show the first image
+            app.currDIC = app.dicT.CellID{1};
+            updateDropDownDIC(app);
+            % Populate the timelapse dropdown and show the first frame
+            updateDropDownTimelapse(app);
+            event.Source.Text = 'Show Frame';
+            ShowTimelapseChanged(app, event)
+            toggleInteractions(app, 'Loaded');
+            updateDIC(app);
+            if ~isempty(app.imgT.FF0Intensity{1})
+                toggleInteractions(app, 'Detection');
+            end
+            if any(matches(app.imgT.Properties.VariableNames, 'SpikeLocations'))
+                toggleInteractions(app, 'Quantification');
+            end
         end
         
         function FileMenuSaveSelected(app)
+            % First save the settings
+            saveSettings(app)
+            % Then save the data
+            oldDir = cd(app.options.LastPath);
+            [fileName, filePath] = uiputfile('*.mat', 'Save network data');
+            togglePointer(app);
+            savePath = fullfile(filePath, fileName);
+            figure(app.UIFigure);
+            imgT = app.imgT;
+            dicT = app.dicT;
+            options = app.options;
+            save(savePath, 'imgT', 'dicT', 'options');
+            cd(oldDir)
+            togglePointer(app);
+            app.newChange = false;
+        end
+        
+        function ImportROIs(app)
+            roiPath = uigetdir(app.options.LastPath, 'Select ROI folder');
+            roiFiles = dir(fullfile(roiPath, '*.zip'));
+            togglePointer(app);
+            figure(app.UIFigure);
+            try
+                % Get the name info
+                nameList = regexprep({roiFiles.name}, '.zip', '');
+                nameParts = regexp(nameList, '_', 'split')';
+                nFiles = numel(nameList);
+                allRois = cell(size(app.imgT,1), 1);
+                hWait = waitbar(0, 'Importing ROI data');
+                for f = 1:nFiles
+                    waitbar(f/nFiles, hWait, sprintf('Loading ROIs data: %d / %d', f, nFiles));
+                    % Match the ROI to the expetimentID
+                    expID = [nameParts{f}{2} '_' nameParts{f}{4}];
+                    cellFltr = matches(app.dicT.ExperimentID, expID);
+                    % Extract the ROIs
+                    tempRoi = ReadImageJROI(fullfile({roiFiles(f).folder}, {roiFiles(f).name}));
+                    tempRoi = cellfun(@(x) x.vnRectBounds, tempRoi{:}, 'UniformOutput', false);
+                    % Get the center coordinate
+                    tempRoi = cellfun(@(x) round([mean(x([2 4])), mean(x([1 3]))]), tempRoi, 'UniformOutput', false);
+                    % Add the ROI to the right cells
+                    allRois{cellFltr} = cell2mat(tempRoi');
+                    % Load the data
+                    getIntensity(app)
+                end
+                app.dicT.RoiSet = allRois;
+                delete(hWait);
+                togglePointer(app)
+            catch ME
+                delete(hWait);
+                togglePointer(app);
+                disp(ME)
+                errordlg('Failed to import the RoiSet. Please check command window for details', 'Import ROIs failed');
+            end
+            modifyROIs(app, 'Modify')
         end
         
         function FileLabelConditionSelected(app)
@@ -287,6 +390,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 button.Source.Text = 'Show Movie';
             end
             ShowTimelapseChanged(app, button)
+            updatePlot(app);
         end
         
         function ChangeRecordingPressed(app, event)
@@ -389,13 +493,14 @@ classdef sCaSpA < matlab.apps.AppBase
     methods
         function DetectClickDIC(app, event)
             if event.Button == 3
-                if app.UIAxesDIC.XLim(2) == size(app.dicT.RawImage{1},1)
+                if ~app.bZoom
+                    zoomF = 50;
                     % Zoom in
                     zoomPoint = round(event.IntersectionPoint);
-                    xMin = max(0, zoomPoint(1) - 50);
-                    xMax = min(size(app.dicT.RawImage{1},1), zoomPoint(1) + 50);
-                    yMin = max(0, zoomPoint(2) - 50);
-                    yMax = min(size(app.dicT.RawImage{1},1), zoomPoint(2) + 50);
+                    xMin = max(0, zoomPoint(1) - zoomF);
+                    xMax = min(size(app.dicT.RawImage{1},1), zoomPoint(1) + zoomF);
+                    yMin = max(0, zoomPoint(2) - zoomF);
+                    yMax = min(size(app.dicT.RawImage{1},1), zoomPoint(2) + zoomF);
                     app.UIAxesDIC.XLim = [xMin xMax];
                     app.UIAxesDIC.YLim = [yMin yMax];
                 else
@@ -403,6 +508,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.UIAxesDIC.XLim = [0 size(app.dicT.RawImage{1},1)];
                     app.UIAxesDIC.YLim = [0 size(app.dicT.RawImage{1},1)];
                 end
+                app.bZoom = ~app.bZoom;
                 return
             end
             % Add or remove ROIs
@@ -476,7 +582,10 @@ classdef sCaSpA < matlab.apps.AppBase
                     % Load the new data
                     % Store that we are done
                     app.changeROI = false;
+                case 'Import'
+                    
             end
+            app.newChange = true;
         end
         
         function detectSpikes(app, event)
@@ -491,61 +600,147 @@ classdef sCaSpA < matlab.apps.AppBase
                 otherwise
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
             end
-            % Gather the image data
-            tempData = cell2mat(app.imgT{imgIdx, 'DetrendedData'});
-            if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
-                tempData = tempData(app.CellNumberEditField.Value,:);
-            end
-            [nTraces, nFrames] = size(tempData);
-            Fs = app.imgT.ImgProperties(imgIdx,4);
-            % Check if the traces need modifications
-            switch app.options.DetectTrace
-                case 'Raw'
-                    useData = tempData;
-                case 'Gradient'
-                    useData = gradient(tempData);
-                case 'Smooth'
-                    useData = wdenoise(tempData', 'DenoisingMethod', 'BlockJS')'; % wdenoise only works on colums so inverted twice
-            end
-            % Get the parameters
-            spikeInts = cell(nTraces, 1);
-            spikeLocs = cell(nTraces, 1);
-            spikeWidths = cell(nTraces, 1);
-            spikeRaster = nan(nTraces, nFrames);
-            spikeProm = app.options.PeakMinProminance;
-            spikeDist = app.options.PeakMinDistance / Fs;
-            spikeMinLeng = app.options.PeakMinDuration / Fs;
-            spikeMaxLeng = app.options.PeakMaxDuration / Fs;
-            % Select the threshold method
-            switch app.options.PeakMinHeight
-                case 'MAD'
-                    spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr;
-                case 'Normalized MAD'
-                    spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
-                case 'Rolling StDev'
-                    winSize = spikeMaxLeng + spikeDist;
-                    tempMean = movmean(useData, winSize, 2);
-                    tempStDev = std(diff(useData,[],2),[],2);
-                    spikeThr = tempMean + (app.options.SigmaThr*tempStDev);
-            end
-            % Use the find peak to detect the events
-            for trace = 1:nTraces
-                [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
-                    'MinPeakHeight', spikeThr(trace), 'MinPeakProminence', spikeProm, 'MinPeakWidth', spikeMinLeng, 'MaxPeakWidth', spikeMaxLeng);
-            end
-            % Add the data according to where it needed to be detected
-            if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
-                app.imgT.SpikeLocations{imgIdx}(app.CellNumberEditField.Value) = spikeLocs;
-                app.imgT.SpikeIntensities{imgIdx}(app.CellNumberEditField.Value) = spikeInts;
-                app.imgT.SpikeWidths{imgIdx}(app.CellNumberEditField.Value) = spikeWidths;
-            else
-                app.imgT.SpikeLocations{imgIdx} = spikeLocs;
-                app.imgT.SpikeIntensities{imgIdx} = spikeInts;
-                app.imgT.SpikeWidths{imgIdx} = spikeWidths;
+            hWait = waitbar(0, 'Detecting spike in data');
+            for idx = imgIdx'
+                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100));
+                % Gather the image data
+                tempData = cell2mat(app.imgT{idx, 'DetrendData'});
+                if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
+                    cellN = app.CellNumberEditField.Value;
+                    tempData = tempData(cellN,:);
+                end
+                [nTraces, nFrames] = size(tempData);
+                Fs = app.imgT.ImgProperties(idx,4);
+                % Check if the traces need modifications
+                switch app.options.DetectTrace
+                    case 'Raw'
+                        useData = tempData;
+                    case 'Gradient'
+                        useData = gradient(tempData);
+                    case 'Smooth'
+                        useData = wdenoise(tempData', 'DenoisingMethod', 'BlockJS')'; % wdenoise only works on colums so inverted twice
+                end
+                % Get the parameters
+                spikeInts = cell(nTraces, 1);
+                spikeLocs = cell(nTraces, 1);
+                spikeWidths = cell(nTraces, 1);
+                spikeRaster = nan(nTraces, nFrames);
+                spikeProm = app.options.PeakMinProminance;
+                spikeDist = app.options.PeakMinDistance / Fs;
+                spikeMinLeng = app.options.PeakMinDuration / Fs;
+                spikeMaxLeng = app.options.PeakMaxDuration / Fs;
+                % Select the threshold method
+                switch app.options.PeakMinHeight
+                    case 'MAD'
+                        spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr;
+                    case 'Normalized MAD'
+                        spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
+                    case 'Rolling StDev'
+                        winSize = spikeMaxLeng + spikeDist;
+                        tempMean = movmean(useData, winSize, 2);
+                        tempStDev = std(diff(useData,[],2),[],2);
+                        spikeThr = tempMean + (app.options.SigmaThr*tempStDev);
+                end
+                % Use the find peak to detect the events
+                for trace = 1:nTraces
+                    [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
+                        'MinPeakHeight', spikeThr(trace), 'MinPeakProminence', spikeProm, 'MinPeakWidth', spikeMinLeng, 'MaxPeakWidth', spikeMaxLeng);
+                end
+                % Add the data according to where it needed to be detected
+                if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
+                    app.imgT.SpikeLocations{idx}(cellN) = spikeLocs;
+                    app.imgT.SpikeIntensities{idx}(cellN) = spikeInts;
+                    app.imgT.SpikeWidths{idx}(cellN) = spikeWidths;
+                else
+                    app.imgT.SpikeLocations{idx} = spikeLocs;
+                    app.imgT.SpikeIntensities{idx} = spikeInts;
+                    app.imgT.SpikeWidths{idx} = spikeWidths;
+                end
             end
             % Add a raster plot
-%             spikeRaster = spikeRaster .* repmat((1:nTraces)', 1, nFrames);
-            app.imgT.SpikeRaster{imgIdx} = spikeRaster;
+            %             spikeRaster = spikeRaster .* repmat((1:nTraces)', 1, nFrames);
+            %             app.imgT.SpikeRaster{imgIdx} = spikeRaster;
+            delete(hWait)
+            app.newChange = true;
+            updatePlot(app);
+            toggleInteractions(app, 'Quantification');
+        end
+        
+        function QuantifySpikes(app)
+            warning('off', 'all');
+            % Get where to detect the events
+            switch app.DetectionButtonGroup.SelectedObject.Text
+                case 'All FOVs'
+                    imgIdx = find(~cellfun(@isempty, app.imgT.FF0Intensity));
+                case 'Current List'
+                    expID = app.dicT{contains(app.dicT.CellID, app.DropDownDIC.Value), 'ExperimentID'};
+                    imgIdx = find(~cellfun(@isempty, app.imgT.FF0Intensity) & contains(app.imgT.ExperimentID, expID));
+                otherwise
+                    imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
+            end
+            hWait = waitbar(0, 'Detecting spike in data');
+            for idx = imgIdx'
+                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100));
+                % Gather the important data
+                Fs = app.imgT.ImgProperties(idx,4);
+                tempData = app.imgT.DetrendData{idx};
+                [nCell, nFrames] = size(tempData);
+                tempLoc = cellfun(@(x) round(x * Fs), app.imgT.SpikeLocations{idx}, 'UniformOutput', false);
+                tempInt = cell2mat(app.imgT.SpikeIntensities{idx}');
+                tempWid = cell2mat(app.imgT.SpikeWidths{idx}');
+                qcd = @(x) (quantile(x, .75) - quantile(x, .25)) / (quantile(x, .75) + quantile(x, .25));
+                % Calculate the spike frequency for single cell, and the proportion of silent cells
+                totTime = (nFrames-1) / Fs;
+                cellFreq = cellfun(@(x) numel(x) / totTime * 60, tempLoc);
+                silentCells = sum(cellFreq==0) / nCell * 100;
+                % Create a raster plot
+                tempRast = nan(nCell, nFrames);
+                for c = 1:nCell
+                    sStart = tempLoc{c};
+                    for s = 1:numel(sStart)
+                        tempRast(c,sStart(s):sStart(s)+app.options.PeakMinDuration) = c;
+                    end
+                end
+                % Calculate the network event with gaussian smoothing of the sum of the raster (similar to EvA)
+                networkRaster = tempRast;
+                networkRaster(~isnan(networkRaster)) = 1;
+                networkRaster(isnan(networkRaster)) = 0;
+                networkRaster = sum(networkRaster);
+                %smoothWindow = gausswin(10);
+                %smoothWindow = smoothWindow / sum(smoothWindow);
+                %networkRaster = filter(smoothWindow, 1, networkRaster);
+                [networkPeaks, networkLocs, networkFWHM] = findpeaks(networkRaster, Fs, 'WidthReference', 'halfheight');
+                % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
+                netThreshold = floor(sum(cellFreq>0) * 0.8);
+                networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
+                % Calculate the average synchronicity
+                syncMean = mean(networkPeaks) / sum(cellFreq>0) * 100;
+                syncMedian = median(networkPeaks) / sum(cellFreq>0) * 100;
+                % Add the data according to where it needed to be detected
+                app.imgT.SpikeRaster{idx} = tempRast;
+                app.imgT.NetworkRaster{idx} = networkRaster;
+                app.imgT.CellFrequency{idx} = cellFreq;
+                app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0));
+                app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0));
+                app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0)) / mean(cellFreq(cellFreq>0));
+                app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));
+                app.imgT.SilentCells(idx) = silentCells;
+                app.imgT.NetworkFrequency(idx) = networkFreq;
+                app.imgT.Synchronicity(idx) = syncMean;
+                app.imgT.Synchronicity2(idx) = syncMedian;
+                app.imgT.CoVSynchronicity(idx) = std(networkPeaks) / mean(networkPeaks);
+                app.imgT.QCDSynchronicity(idx) = qcd(networkPeaks);
+                % Calculate the average intensity and duration of the events (not yet taking into account manually added events)
+                app.imgT.MeanIntensity(idx) = mean(tempInt);
+                app.imgT.MedianIntensity(idx) = median(tempInt);
+                app.imgT.CoVIntensity(idx) = std(tempInt) / mean(tempInt);
+                app.imgT.QCDIntensity(idx) = qcd(tempInt);
+                app.imgT.MeanDuration(idx) = mean(tempWid);
+                app.imgT.MedianDuration(idx) = median(tempWid);
+                app.imgT.CoVDuration(idx) = std(tempWid) / mean(tempWid);
+                app.imgT.QCDDuration(idx) = qcd(tempWid);
+            end
+            delete(hWait);
         end
     end
     
@@ -564,7 +759,7 @@ classdef sCaSpA < matlab.apps.AppBase
         function changePlotTrace(app, event)
             % First identify in which FOV we are and get the number of ROIs
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-            nRoi = size(app.imgT.DetrendedData{tempCell}, 1);
+            nRoi = size(app.imgT.DetrendData{tempCell}, 1);
             if strcmp(event.EventName, 'ButtonPushed')
                 
                 % if + or - were pressed, make sure to stay in the range of available ROIs
@@ -586,25 +781,60 @@ classdef sCaSpA < matlab.apps.AppBase
         function updatePlot(app)
             % simple function for now
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-            tempData = app.imgT.DetrendedData{tempCell};
-            Fs = app.imgT.ImgProperties(tempCell,4);
-            time = (0:size(tempData, 2)-1) / Fs;
-            cla(app.UIAxesPlot);
-            switch app.PlotTypeButtonGroup.SelectedObject.Text
-                case 'All And Mean'
-                    hLeg(1) = plot(app.UIAxesPlot, time, tempData(1,:), 'Color', [.7 .7 .7]);
-                    hold(app.UIAxesPlot, 'on')
-                    plot(app.UIAxesPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7]);
-                    hLeg(2) = plot(app.UIAxesPlot, time, mean(tempData), 'Color', 'r');
-                    legend(app.UIAxesPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
-                    app.UIAxesPlot.XLim = [time(1) time(end)];
-                otherwise
-                    % plot one trace and the identified spikes
-                    cellN = app.CellNumberEditField.Value;
-                    hold(app.UIAxesPlot, 'off')
-                    plot(app.UIAxesPlot, time, tempData(cellN,:), 'Color', 'k');
-                    legend(app.UIAxesPlot, 'off');
-                    hold(app.UIAxesPlot, 'on')
+            if ~isempty(app.imgT.DetrendData{tempCell})
+                tempData = app.imgT.DetrendData{tempCell};
+                Fs = app.imgT.ImgProperties(tempCell,4);
+                time = (0:size(tempData, 2)-1) / Fs;
+                cla(app.UIAxesPlot);
+                switch app.PlotTypeButtonGroup.SelectedObject.Text
+                    case 'All And Mean'
+                        hold(app.UIAxesPlot, 'on')
+                        % Before plotting anything, try to plot the spikes
+                        hLeg(1) = plot(app.UIAxesPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                        plot(app.UIAxesPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                        hLeg(2) = plot(app.UIAxesPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        app.UIAxesPlot.XLim = [time(1) time(end)];
+                        if ~isempty(app.imgT.SpikeLocations{tempCell})
+                            spikeLoc = app.imgT.SpikeLocations{tempCell};
+                            for c = 1:numel(spikeLoc)
+                                tempSpike = spikeLoc{c};
+                                xPatch = [];
+                                xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
+                                xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
+                                yPatch = repmat(repelem(app.UIAxesPlot.YLim,2)', 1, numel(tempSpike));
+                                patch(app.UIAxesPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                            end
+                        end
+                        legend(app.UIAxesPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
+                    otherwise
+                        % plot one trace and the identified spikes
+                        cellN = app.CellNumberEditField.Value;
+                        hold(app.UIAxesPlot, 'off')
+                        plot(app.UIAxesPlot, time, tempData(cellN,:), 'Color', 'k', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        legend(app.UIAxesPlot, 'off');
+                        hold(app.UIAxesPlot, 'on')
+                        if ~isempty(app.imgT.SpikeLocations{tempCell})
+                            spikeLoc = app.imgT.SpikeLocations{tempCell}{cellN};
+                            spikeInt = tempData(cellN, round(spikeLoc*Fs)+1);
+                            % spikeInt = app.imgT.SpikeIntensities{imgID}{cellN};
+                            plot(app.UIAxesPlot, spikeLoc, spikeInt, 'or', 'HitTest', 'off', 'ButtonDownFcn', '')
+                        end
+                        % Add the level of the threshold
+                        switch app.options.PeakMinHeight
+                            case 'MAD'
+                                spikeThr = median(tempData(cellN,:)) + mad(tempData(cellN,:)) * app.options.SigmaThr;
+                                plot(app.UIAxesPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                            case 'Normalized MAD'
+                                spikeThr = median(tempData(cellN,:)) + mad(tempData(cellN,:)) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
+                                plot(app.UIAxesPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                            case 'Rolling StDev'
+                                winSize = (app.options.PeakMaxDuration / Fs) + (app.options.PeakMinDistance / Fs);
+                                tempMean = movmean(tempData(cellN,:), winSize, 2);
+                                tempStDev = std(diff(tempData(cellN,:),[],2),[],2);
+                                spikeThr = tempMean + (app.options.SigmaThr*tempStDev);
+                                plot(app.UIAxesPlot, time, spikeThr, ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                        end
+                end
             end
         end
     end
@@ -731,6 +961,7 @@ classdef sCaSpA < matlab.apps.AppBase
             if ~isempty(app.dicT.RoiSet{whatDIC})
                 modifyROIs(app, 'Modify');
                 updatePlot(app);
+                %cla(app.UIAxesPlot);
             else
                 app.patchMask = [];
                 cla(app.UIAxesPlot);
@@ -803,6 +1034,11 @@ classdef sCaSpA < matlab.apps.AppBase
                 roiIntensities = zeros(nRoi, nFrames);
                 for roi = 1:nRoi
                     currRoi = [tempRoi(roi,:) - app.options.RoiSize tempRoi(roi,:) + app.options.RoiSize];
+                    % Check the ROI is inside the image
+                    currRoi(1) = max(currRoi(1), 1);
+                    currRoi(2) = max(currRoi(2), 1);
+                    currRoi(3) = min(currRoi(3), size(imgData,1));
+                    currRoi(4) = min(currRoi(4), size(imgData,1));
                     % For the image to be correct in ImageJ, column 1 = Y column 2 = X, then consider that ImageJ starts at 0
                     roiIntensities(roi,:) = mean(imgData(currRoi(2):currRoi(4), currRoi(1):currRoi(3), :), [1 2]);
                 end
@@ -817,7 +1053,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 deltaff0Ints = (roiIntensities - repmat(baseInts, 1, nFrames)) ./ repmat(baseInts, 1, nFrames);
                 app.imgT(imgFltr(i), 'RawIntensity') = {roiIntensities};
                 app.imgT(imgFltr(i), 'FF0Intensity') = {deltaff0Ints};
-                app.imgT(imgFltr(i), 'DetrendedData') = {deltaff0Ints};
+                app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
                 loadTime = toc;
             end
 %             detrendData(app)
@@ -853,7 +1089,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         tempDetrend{i,1} = gaussData;
                 end
             end
-            app.imgT{imgFltr, 'DetrendedData'} = tempDetrend;
+            app.imgT{imgFltr, 'DetrendData'} = tempDetrend;
         end
         
         function filteredData = gaussianFilter(app, rawData, sampfreq, cornerfreq)
@@ -896,7 +1132,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.ButtonPreviousRecording = uibutton(app.UIFigure, 'push', 'Position', [224 964 22 22], 'Text', '<', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @ChangeRecordingPressed, true));
             app.DetectROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Detect ROIs', 'Position', [283 964 100 22], 'Enable', 'off');
-            app.ImportROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Import ROIs', 'Position', [384 964 100 22], 'Enable', 'off');
+            app.ImportROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Import ROIs', 'Position', [384 964 100 22], 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @ImportROIs, false));
             app.AddROIsButton = uibutton(app.UIFigure, 'state', 'Text', 'Add ROIs', 'Position', [485 964 100 22], 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @crosshairDIC, true));
             app.DeleteROIsButton = uibutton(app.UIFigure, 'state', 'Text', 'Delete ROIs', 'Position', [586 964 100 22], 'Enable', 'off',...
@@ -976,7 +1213,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.SelectedTraceButton = uitogglebutton(app.DetectionButtonGroup, 'Text', 'Selected Trace', 'Position', [104 2 100 22], 'Enable', 'off');
             app.DetectButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [223 31 100 22], 'Text', 'Detect', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @detectSpikes, true));
-            app.QuantifyButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [333 31 100 22], 'Text', 'Quantify', 'Enable', 'off');
+            app.QuantifyButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [333 31 100 22], 'Text', 'Quantify', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @QuantifySpikes, false));
             app.AddPeakButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [223 8 100 22], 'Text', 'Add Peak', 'Enable', 'off');
             app.RemovePeakButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [332 8 100 22], 'Text', 'Remove Peak', 'Enable', 'off');
             % Create Plot Interaction Panel
@@ -1088,8 +1326,19 @@ classdef sCaSpA < matlab.apps.AppBase
 
         % Code that executes before app deletion
         function delete(app)
-
             saveSettings(app);
+            if app.newChange
+                % If the data is not saved, ask if it needs to be saved
+                answer = questdlg('Do you want to save the data?', 'Save before closing');
+                switch answer
+                    case 'Yes'
+                        FileMenuSaveSelected(app);
+                    case 'No'
+                        % Nothing to add
+                    case 'Cancel'
+                        return
+                end
+            end
             % Delete UIFigure when app is deleted
             delete(app.UIFigure)
         end
