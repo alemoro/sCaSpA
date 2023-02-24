@@ -130,6 +130,12 @@ classdef sCaSpA < matlab.apps.AppBase
     % Callbacks methods
     methods
         function FileMenuOpenSelected(app)
+            % First check if there is a still condition name
+            if isempty(app.options.StillCondition)
+                answ = inputdlg('Still condition not defined. Please specify it below.', 'Still condition not defined.');
+                app.options.StillCondition = answ{1};
+                app.StillConditionEditField.Value = app.options.StillCondition;
+            end
             % Locate the folder with the images
             imgPath = uigetdir(app.options.LastPath, 'Select Image folder');
             togglePointer(app)
@@ -538,6 +544,44 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Store the ROI on the image
                 app.patchMask = [app.patchMask; hPatch];
             end
+        end
+        
+        function DetectROIs(app)
+            % Very simple and biased detection. Because there is always some resting signal in the majority of our recordings,
+            % this function tries to enhance the soma region (B&W opening) and create a watershed-based segmentation.
+            % For consistency with the manually added point, try to get to the center of the cell and create a squared ROI
+            
+            warning('off', 'all');
+            % Get where to detect the events
+            switch app.DetectionButtonGroup.SelectedObject.Text
+                case 'All FOVs'
+                    imgIdx = 1:height(app.imgT);
+                otherwise
+                    imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
+            end
+            hWait = waitbar(0, 'Detecting ROIs');
+            for idx = imgIdx
+                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting ROIs %0.2f%%', idx/numel(imgIdx)*100));
+                % First the image and do some filtering
+                img = imread(app.imgT.Filename{idx});
+                gaussImg = imgaussfilt(img, app.options.RoiSize*2);
+                gaussImg = img-gaussImg;
+                % Perform a multilevel threshold
+                thrValues = multithresh(gaussImg, 2);
+                thrFltr = imquantize(gaussImg, thrValues(1)) - 1; % Since there are 2 levels, to get to the fltr remove the level 1
+                % Try to remove the small unwanted detection
+                bwImg = bwareaopen(thrFltr, app.options.RoiSize^2, 8); % The 8 is 8-connected
+                % Get the center of the regions
+                roiProp = regionprops('table', bwImg, 'basic');
+                % Add the regions to the dicT
+                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                app.dicT.RoiSet{idx} = round(roiProp.Centroid);
+                getIntensity(app, idx);
+            end
+            delete(hWait)
+            app.newChange = true;
+            updatePlot(app);
+            toggleInteractions(app, 'Detection');
         end
         
         function modifyROIs(app, howTo)
@@ -987,47 +1031,27 @@ classdef sCaSpA < matlab.apps.AppBase
                 case 'Movie'
             end
         end
-        
-        function imgStack = loadTiff(app, imgIdx, addWait)
-            imgFile = app.imgT.Filename{imgIdx};
-            imgInfo = app.imgT.ImgProperties(imgIdx,:);
-            imgWidth = imgInfo(1);
-            imgHeight = imgInfo(2);
-            imgNumber = imgInfo(3);
-            imgStack = zeros(imgHeight, imgWidth, imgNumber, 'uint16');
-            imgStackID = fopen(imgFile, 'r');
-            tstack = Tiff(imgFile);
-            imgStack(:,:,1) = tstack.read();
-            if addWait
-                hWait = helpdlg('Loading image without progress. It''s faster!');
-            end
-            imgStack(:,:,1) = tstack.read();
-            for n = 2:imgNumber
-                nextDirectory(tstack);
-                imgStack(:,:,n) = tstack.read();
-            end
-            fclose(imgStackID);
-            if addWait
-                delete(hWait)
-            end
-        end
-        
-        function getIntensity(app)
+               
+        function getIntensity(app, varargin)
             % First get the image where to run the analysis
             warning('off', 'all');
             togglePointer(app);
-            tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+            if nargin==2
+                tempDIC = varargin{1};
+            else
+                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+            end
             tempExp = app.dicT.ExperimentID{tempDIC};
             tempRoi = app.dicT.RoiSet{tempDIC};
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
-            hWait = waitbar(0, 'Loading image...');
+%             hWait = waitbar(0, 'Loading image...');
             loadTime = 100;
             for i = 1:nImages
-                waitbar(i/nImages, hWait, sprintf('Loading data (Remaining time ~%0.2f s)', (nImages-i+1)*loadTime));
+%                 waitbar(i/nImages, hWait, sprintf('Loading data (Remaining time ~%0.2f s)', (nImages-i+1)*loadTime));
                 tic
-                imgData = loadTiff(app, imgFltr(i), 0);
+                imgData = loadTiff(app.imgT.Filename{imgFltr(i)}, app.imgT.ImgProperties(imgFltr(i),:), 0);
                 nFrames = size(imgData, 3);
                 % Get the Z profile of the ROIs
                 nRoi = size(tempRoi,1);
@@ -1057,7 +1081,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 loadTime = toc;
             end
 %             detrendData(app)
-            delete(hWait);
+%             delete(hWait);
             togglePointer(app);
             warning('on', 'all');
         end
@@ -1090,17 +1114,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
             end
             app.imgT{imgFltr, 'DetrendData'} = tempDetrend;
-        end
-        
-        function filteredData = gaussianFilter(app, rawData, sampfreq, cornerfreq)
-            fc = cornerfreq/sampfreq;
-            sigma = 0.132505/fc;
-            nc = round(4*sigma);
-            coeffs = -nc:nc;
-            coeffs = exp((-coeffs.^2)/(2*sigma^2))/(sqrt(2*pi)*sigma);
-            filteredData = conv(rawData,coeffs);
-            filteredData = filteredData(nc+1:end-nc);
-        end
+        end        
     end
     
     % Component initialization
@@ -1131,7 +1145,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ButtonPushedFcn', createCallbackFcn(app, @ChangeRecordingPressed, true));
             app.ButtonPreviousRecording = uibutton(app.UIFigure, 'push', 'Position', [224 964 22 22], 'Text', '<', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @ChangeRecordingPressed, true));
-            app.DetectROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Detect ROIs', 'Position', [283 964 100 22], 'Enable', 'off');
+            app.DetectROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Detect ROIs', 'Position', [283 964 100 22], 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @DetectROIs, false));
             app.ImportROIsButton = uibutton(app.UIFigure, 'push', 'Text', 'Import ROIs', 'Position', [384 964 100 22], 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @ImportROIs, false));
             app.AddROIsButton = uibutton(app.UIFigure, 'state', 'Text', 'Add ROIs', 'Position', [485 964 100 22], 'Enable', 'off',...
