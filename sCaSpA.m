@@ -19,7 +19,7 @@ classdef sCaSpA < matlab.apps.AppBase
         FixYAxisButton                 matlab.ui.control.Button
         ZoomXMax                       matlab.ui.control.NumericEditField
         ZoomXMin                       matlab.ui.control.NumericEditField
-        ZoomXButton                    matlab.ui.control.Button
+        ZoomXButton                    matlab.ui.control.StateButton
         CellNumberEditField            matlab.ui.control.NumericEditField
         ButtonPreviousCell             matlab.ui.control.Button
         ButtonNextCell                 matlab.ui.control.Button
@@ -79,8 +79,8 @@ classdef sCaSpA < matlab.apps.AppBase
         StillConditionEditFieldLabel   matlab.ui.control.Label
         SliderMovie                    matlab.ui.control.Slider
         SpikeDetectionPanel            matlab.ui.container.Panel
-        RemovePeakButton               matlab.ui.control.Button
-        AddPeakButton                  matlab.ui.control.Button
+        RemovePeakButton               matlab.ui.control.StateButton
+        AddPeakButton                  matlab.ui.control.StateButton
         QuantifyButton                 matlab.ui.control.Button
         DetectButton                   matlab.ui.control.Button
         DetectionButtonGroup           matlab.ui.container.ButtonGroup
@@ -91,10 +91,10 @@ classdef sCaSpA < matlab.apps.AppBase
         UIAxesDIC                      matlab.ui.control.UIAxes
         UIAxesMovie                    matlab.ui.control.UIAxes
         UIAxesPlot                     matlab.ui.control.UIAxes
-        DICChannels                     matlab.ui.container.ButtonGroup
-        DICCh1                          matlab.ui.control.ToggleButton
-        DICCh2                          matlab.ui.control.ToggleButton
-        DICCh3                          matlab.ui.control.ToggleButton
+        DICChannels                    matlab.ui.container.ButtonGroup
+        DICCh1                         matlab.ui.control.ToggleButton
+        DICCh2                         matlab.ui.control.ToggleButton
+        DICCh3                         matlab.ui.control.ToggleButton
     end
     
     % File storage properties
@@ -106,6 +106,8 @@ classdef sCaSpA < matlab.apps.AppBase
         currCell % The cell that is selected
         movieData % Temporary storage of the timelapse
         options % Store the options
+        tempAddPeak = []; % Temp variable for adding new peaks
+        tempRemovePeak = []; % Temp variable for removing peaks
         YMinMax % Store the minimum and maximum value of the Y axis in this FOV
         bSave % Toggle if there is new data that need to be saved
     end
@@ -121,10 +123,25 @@ classdef sCaSpA < matlab.apps.AppBase
         nChannel % number of DIC channels
         newChange = false; % to detect if there are changes that needs to be saved
         bZoom = false;
+        ZoomStepX
+        MaxStepX
+        bWarnings = struct('AddEvents', true,...
+                           'RemoveEvents', true,...
+                           'SaveFile', false);
         keepColor = [219 68 55;...      % Google RED
                     15 157 88;...       % Google GREEN
                     66 133 244;...      % Google BLUE
                     244 180 0] / 255;	% Google YELLOW
+    end
+    
+    % Version properties
+    properties (Access = private)
+        majVer = 1;
+        % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
+        minVer = 0;
+        % minor versions - 230228 = 0 -> basic functionality implemented
+        dailyBuilt = 1;
+        % bug fixes      - 230228 = 1 -> tested workflow in one dataset
     end
     
     % Callbacks methods
@@ -229,7 +246,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 %detrendData(app);
                 toggleInteractions(app, 'Loaded');
                 %ListImagesChange(app)
-                app.newChange = true;
+                app.bWarnings.SaveFile = true;
             else
                 togglePointer(app)
                 return
@@ -246,6 +263,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 networkFiles = load(fullfile(filePath, fileName));
                 if isfield(networkFiles, 'options')
                     app.options = networkFiles.options;
+                    % Add set the version of the current built
+                    app.options.UIVersion = sprintf('%d.%d#%d', app.majVer, app.minVer, app.dailyBuilt);
                 end
                 if isfield(networkFiles, 'dicT')
                     if isempty(app.dicT)
@@ -302,7 +321,7 @@ classdef sCaSpA < matlab.apps.AppBase
             save(savePath, 'imgT', 'dicT', 'options');
             cd(oldDir)
             togglePointer(app);
-            app.newChange = false;
+            app.bWarnings.SaveFile = false;
         end
         
         function ImportROIs(app)
@@ -348,6 +367,55 @@ classdef sCaSpA < matlab.apps.AppBase
         end
         
         function FileMenuExportSelected(app)
+            % Ask what needs to be saved
+            whatExport = questdlg('What would you like to export?', 'Export as csv', 'Analysis', 'Traces', 'Both', 'Analysis');
+            expT = app.imgT;
+            expT.ImgProperties = expT.ImgProperties(:,4);
+            expT.Properties.VariableNames{8} = 'Fs';
+            switch whatExport
+                case 'Analysis'
+                    initialVals = [2:8, 20:105];
+                    whatToExport = listdlg('ListString', expT.Properties.VariableNames, 'Name', 'Variable selection', 'InitialValue', initialVals);
+                    expT = expT(:,whatToExport);
+                    [fileName, filePath] = uiputfile('*.csv', 'Export network data');
+                    writetable(expT, fullfile(filePath, fileName));
+                case 'Traces'
+                    warndlg('Not implemented yet!', 'Not implemented');
+%                     [fileName, filePath] = uiputfile('*.xlsx', 'Export network traces');
+%                     hWait = waitbar(0, 'Exporting data');
+%                     nSheet = size(app.imgT, 1);
+%                     allRaw = app.imgT.RawIntensity;
+%                     allFF0 = app.imgT.FF0Intensity;
+%                     allCellID = app.imgT.CellID;
+%                     %timeEst = 1;
+%                     for s = 1:nSheet
+%                         tic;
+%                         waitbar(s/nSheet, hWait, sprintf('Exporting data (~%.2f s)', timeEst*(nSheet-s)));
+%                         writematrix(allRaw{s}, fullfile(filePath, sprintf('Raw_%s', fileName)), 'Sheet', allCellID{s});
+%                         writematrix(allFF0{s}, fullfile(filePath, sprintf('FF0_%s', fileName)), 'Sheet', allCellID{s});
+%                         timeEst = toc;
+%                     end
+%                     close(hWait)
+                otherwise
+                    warndlg('Not implemented yet!', 'Not implemented');
+%                     [fileName, filePath] = uiputfile('*.csv', 'Export network data');
+%                     writetable(expT, fullfile(filePath, fileName));
+%                     fileName = regexprep(fileName, 'csv', 'xlsx');
+%                     hWait = waitbar(0, 'Exporting data');
+%                     nSheet = size(app.imgT, 1);
+%                     allRaw = app.imgT.RawIntensity;
+%                     allFF0 = app.imgT.FF0Intensity;
+%                     allCellID = app.imgT.CellID;
+%                     %timeEst = 1;
+%                     for s = 1:nSheet
+%                         tic;
+%                         waitbar(s/nSheet, hWait, sprintf('Exporting data (~%.2f s)', timeEst*(nSheet-s)));
+%                         writematrix(allRaw{s}, fullfile(filePath, sprintf('Raw_%s', fileName)), 'Sheet', allCellID{s});
+%                         writematrix(allFF0{s}, fullfile(filePath, sprintf('FF0_%s', fileName)), 'Sheet', allCellID{s});
+%                         timeEst = toc;
+%                     end
+%                     close(hWait)
+            end
         end
         
         function SaveOptions(app)
@@ -490,6 +558,21 @@ classdef sCaSpA < matlab.apps.AppBase
             end
         end
         
+        function crosshairPlot(app, event)
+            if strcmp(app.UIFigure.Pointer, 'arrow')
+                app.UIFigure.Pointer = 'crosshair';
+                app.AddPeakButton.Enable = app.AddPeakButton.Value;
+                app.RemovePeakButton.Enable = app.RemovePeakButton.Value;
+            else
+                app.UIFigure.Pointer = 'arrow';
+                app.AddPeakButton.Enable = 'on';
+                app.RemovePeakButton.Enable = 'on';
+                app.AddPeakButton.Value = false;
+                app.RemovePeakButton.Value = false;
+                modifyPeaks(app, event.Source.Text);
+            end
+        end
+        
         function ChangedROI(app)
             app.changeROI = true;
         end
@@ -579,7 +662,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 getIntensity(app, idx);
             end
             delete(hWait)
-            app.newChange = true;
+            app.bWarnings.SaveFile = true;
             updatePlot(app);
             toggleInteractions(app, 'Detection');
         end
@@ -629,7 +712,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 case 'Import'
                     
             end
-            app.newChange = true;
+            app.bWarnings.SaveFile = true;
         end
         
         function detectSpikes(app, event)
@@ -705,9 +788,158 @@ classdef sCaSpA < matlab.apps.AppBase
             %             spikeRaster = spikeRaster .* repmat((1:nTraces)', 1, nFrames);
             %             app.imgT.SpikeRaster{imgIdx} = spikeRaster;
             delete(hWait)
-            app.newChange = true;
+            app.bWarnings.SaveFile = true;
             updatePlot(app);
             toggleInteractions(app, 'Quantification');
+        end
+        
+        function DetectClickPlot(app, event)
+            % Add or remove ROIs
+            imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+            cellN = app.CellNumberEditField.Value;
+            clickedPoint = event.IntersectionPoint(1);
+            % Get the trace of the cell
+            tempData = app.imgT.DetrendData{imgIdx}(cellN,:);
+            Fs = app.imgT.ImgProperties(imgIdx,4);
+            if app.AddPeakButton.Value
+                % Get the info about the other spikes
+                if isempty(app.tempAddPeak)
+                    allLoc = round(app.imgT.SpikeLocations{imgIdx}{cellN}*Fs);
+                    allInt = app.imgT.SpikeIntensities{imgIdx}{cellN};
+                    allWidth = app.imgT.SpikeWidths{imgIdx}{cellN};
+                else
+                    allLoc = app.tempAddPeak.Loc;
+                    allInt = app.tempAddPeak.Int;
+                    allWidth = app.tempAddPeak.FWHM;
+                end
+                % Check if we need to add a new peak, or remove the last added
+                if event.Button == 3
+                    if numel(allLoc) > numel(app.imgT.SpikeLocations{imgIdx}{cellN})
+                        % Remove a point, first from the plot (since it is the last one added it will be the first children), then from the tempAddPeak
+                        delete(app.UIAxesPlot.Children(1));
+                        app.tempAddPeak.Loc = allLoc(1:end-1);
+                        app.tempAddPeak.Int = allInt(1:end-1);
+                        app.tempAddPeak.FWHM = allWidth(1:end-1);
+                    else
+                        warndlg(sprintf('There are no new manually added peaks.\nTo remove an automatically added peak use the "Remove Peak" button'), 'No new peaks');
+                    end
+                else
+                    % Define the searching area
+                    tempPoint = round(clickedPoint*Fs);
+                    searchLim = app.options.PeakMinDistance + round((app.options.PeakMinDuration+app.options.PeakMaxDuration) / 2);
+                    searchLim = [tempPoint-searchLim tempPoint+searchLim];
+                    peakLim1 = allLoc(find(allLoc<tempPoint,1,'last'))+1;
+                    peakLim2 = allLoc(find(allLoc>tempPoint,1,'first'))-1;
+                    if isempty(peakLim1)
+                        peakLim1 = 1;
+                    end
+                    if isempty(peakLim2)
+                        peakLim2 = numel(tempData);
+                    end
+                    searchArea = max(peakLim1, searchLim(1)):min(peakLim2, searchLim(end));
+                    % Find the maxima of this area
+                    [newInt, newLoc, ~, newProm] = findpeaks(tempData(searchArea), 'MinPeakProminence', app.options.PeakMinProminance/2);
+                    [newInt, newFltr] = max(newInt);
+                    newLoc = newLoc(newFltr) + searchArea(1) -2;
+                    newProm = newProm(newFltr);
+                    % Check if there are other spikes in this area
+                    if any(allLoc >= searchArea(1) & allLoc <= searchArea(end))
+                        errordlg('Peak already detected in this area', 'No more peaks');
+                    else
+                        % Show the new point
+                        plot(app.UIAxesPlot, (newLoc)/Fs, newInt, 'o', 'color', app.keepColor(4,:), 'LineWidth', 1.5);
+                        % Add the new peak to the table
+                        allLoc = [allLoc, newLoc];
+                        allInt = [allInt, newInt];
+                        allWidth = [allWidth, newProm];
+                        app.tempAddPeak.Loc = allLoc;
+                        app.tempAddPeak.Int = allInt;
+                        app.tempAddPeak.FWHM = allWidth;
+                    end
+                end
+            else
+                % That's more tricky, delete the events
+                allLoc = round(app.imgT.SpikeLocations{imgIdx}{cellN}*Fs);
+                allInt = app.imgT.SpikeIntensities{imgIdx}{cellN};
+                if event.Button == 3
+                    if ~isempty(app.tempRemovePeak)
+                        % Remove a point, first from the plot (since it is the last one added it will be the first children), then from the tempAddPeak
+                        delete(app.UIAxesPlot.Children(1));
+                        app.tempRemovePeak = app.tempRemovePeak(1:end-1);
+                    else
+                        warndlg('There are no manually deleted peaks.', 'No new peaks');
+                    end
+                else
+                    % Define the searching area
+                    tempPoint = round(clickedPoint*Fs);
+                    searchLim = app.options.PeakMinDistance + app.options.PeakMaxDuration;
+                    searchArea = tempPoint-searchLim:tempPoint+searchLim;
+                    delPeak = find(allLoc > searchArea(1) & allLoc < searchArea(end));
+                    while numel(delPeak) > 1
+                        searchLim = searchLim / 2;
+                        searchArea = tempPoint-searchLim:tempPoint+searchLim;
+                        delPeak = find(allLoc > searchArea(1) & allLoc < searchArea(end));
+                    end
+                    if numel(delPeak) == 1
+                        % Show that this peak is deleted
+                        plot(app.UIAxesPlot, (allLoc(delPeak))/Fs, allInt(delPeak), 'x', 'color', app.keepColor(2,:), 'LineWidth', 1.5);
+                        app.tempRemovePeak = [app.tempRemovePeak, allLoc(delPeak)];
+                    end
+                end
+                
+            end
+        end
+        
+        function modifyPeaks(app, howTo)
+            % Get the information on the cell
+            imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+            cellN = app.CellNumberEditField.Value;
+            Fs = app.imgT.ImgProperties(imgIdx,4);
+            switch howTo
+                case 'Add Peak'
+                    % There should be temp events, load them
+                    if isempty(app.tempAddPeak)
+                        if app.bWarnings.AddEvents
+                            answ = uiconfirm(app.UIFigure, 'No new events were added to the table.', 'Warning', 'Icon', 'info',...
+                                'Options', {'OK', 'Don''t show again'}, 'DefaultOption', 1);
+                            if matches(answ, 'Don''t show again')
+                                app.bWarnings.AddEvents = false;
+                            end
+                        end
+                    else
+                        % First sort the events
+                        allLoc = app.tempAddPeak.Loc;
+                        allInt = app.tempAddPeak.Int;
+                        allWidth = app.tempAddPeak.FWHM;
+                        [allLoc, sortIdx] = sort(allLoc);
+                        allInt = allInt(sortIdx);
+                        allWidth = allWidth(sortIdx);
+                        app.imgT.SpikeLocations{imgIdx}{cellN} = allLoc / Fs;
+                        app.imgT.SpikeIntensities{imgIdx}{cellN} = allInt;
+                        app.imgT.SpikeWidths{imgIdx}{cellN} = allWidth;
+                    end
+                    % Delete the temp variable and update the plot
+                    app.tempAddPeak = [];
+                    updatePlot(app);
+                otherwise
+                     if isempty(app.tempRemovePeak)
+                        if app.bWarnings.RemoveEvents
+                            answ = uiconfirm(app.UIFigure, 'No events were selected.', 'Wawrning', 'Icon', 'info',...
+                                'Options', {'OK', 'Don''t show again'}, 'DefaultOption', 1);
+                            if matches(answ, 'Don''t show again')
+                                app.bWarnings.RemoveEvents = false;
+                            end
+                        end
+                     else
+                         % Remove the event from all the possible locations
+                         allLoc = round(app.imgT.SpikeLocations{imgIdx}{cellN}*Fs);
+                         [~, removeIdx] = intersect(allLoc, app.tempRemovePeak);
+                         app.imgT.SpikeLocations{imgIdx}{cellN}(removeIdx) = [];
+                         app.imgT.SpikeIntensities{imgIdx}{cellN}(removeIdx) = [];
+                         app.imgT.SpikeWidths{imgIdx}{cellN}(removeIdx) = [];
+                         app.tempRemovePeak = [];
+                     end
+            end
         end
         
         function QuantifySpikes(app)
@@ -724,25 +956,35 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             hWait = waitbar(0, 'Detecting spike in data');
             for idx = imgIdx'
-                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100));
+                waitbar(idx/numel(imgIdx), hWait, sprintf('Quantifying spikes in cell: %d', idx));
                 % Gather the important data
                 Fs = app.imgT.ImgProperties(idx,4);
                 tempData = app.imgT.DetrendData{idx};
                 [nCell, nFrames] = size(tempData);
                 tempLoc = cellfun(@(x) round(x * Fs), app.imgT.SpikeLocations{idx}, 'UniformOutput', false);
                 tempInt = cell2mat(app.imgT.SpikeIntensities{idx}');
-                tempWid = cell2mat(app.imgT.SpikeWidths{idx}');
                 qcd = @(x) (quantile(x, .75) - quantile(x, .25)) / (quantile(x, .75) + quantile(x, .25));
+                % Calculate the actual rise and decay (findpeaks only reports the FWHM, not where the start and end are)
+                optRD = struct('UseParallel', true, 'TranNetwork', false, 'UseTrained', false);
+                [spikeRise, spikeDecay, spikeProperties] = CalciumRiseAndDecay(tempData, tempLoc, Fs, app.options, optRD);
                 % Calculate the spike frequency for single cell, and the proportion of silent cells
                 totTime = (nFrames-1) / Fs;
                 cellFreq = cellfun(@(x) numel(x) / totTime * 60, tempLoc);
                 silentCells = sum(cellFreq==0) / nCell * 100;
-                % Create a raster plot
+                % Calculate the interspike interval
+                interSpikeInterval = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
+                interSpikeInterval = cell2mat(interSpikeInterval');
+                % Create a raster plot based on the start and decay time, and one based on the peaks +- half of the 90% duration
                 tempRast = nan(nCell, nFrames);
+                tempRastPeak = nan(nCell, nFrames);
                 for c = 1:nCell
-                    sStart = tempLoc{c};
+                    sStart = spikeRise{c};
+                    sEnd = spikeDecay{c};
+                    sPeak = tempLoc{c};
+                    sDur = spikeProperties{c,5};
                     for s = 1:numel(sStart)
-                        tempRast(c,sStart(s):sStart(s)+app.options.PeakMinDuration) = c;
+                        tempRast(c,sStart(s):sEnd(s)) = c;
+                        tempRastPeak(c,max(sPeak(s)-floor(0.5*sDur(s)*Fs), 1):min(sPeak(s)+floor(0.5*sDur(s)*Fs), nFrames)) = c;
                     end
                 end
                 % Calculate the network event with gaussian smoothing of the sum of the raster (similar to EvA)
@@ -750,39 +992,118 @@ classdef sCaSpA < matlab.apps.AppBase
                 networkRaster(~isnan(networkRaster)) = 1;
                 networkRaster(isnan(networkRaster)) = 0;
                 networkRaster = sum(networkRaster);
-                %smoothWindow = gausswin(10);
-                %smoothWindow = smoothWindow / sum(smoothWindow);
-                %networkRaster = filter(smoothWindow, 1, networkRaster);
-                [networkPeaks, networkLocs, networkFWHM] = findpeaks(networkRaster, Fs, 'WidthReference', 'halfheight');
+                smoothWindow = gausswin(10);
+                smoothWindow = smoothWindow / sum(smoothWindow);
+                networkRaster = filter(smoothWindow, 1, networkRaster);
                 % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
+                networkPeaks = findpeaks(networkRaster, Fs);
                 netThreshold = floor(sum(cellFreq>0) * 0.8);
                 networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
-                % Calculate the average synchronicity
-                syncMean = mean(networkPeaks) / sum(cellFreq>0) * 100;
-                syncMedian = median(networkPeaks) / sum(cellFreq>0) * 100;
+                % Calculate the average synchronicity (based on the 90% duration)
+                rasterDuration = tempRastPeak;
+                rasterDuration(~isnan(rasterDuration)) = 1;
+                rasterDuration(isnan(rasterDuration)) = 0;
+                rasterDuration = sum(rasterDuration);
+                syncPeaks = findpeaks(rasterDuration, Fs);
                 % Add the data according to where it needed to be detected
+                app.imgT.SpikeProperties{idx} = spikeProperties;
                 app.imgT.SpikeRaster{idx} = tempRast;
                 app.imgT.NetworkRaster{idx} = networkRaster;
                 app.imgT.CellFrequency{idx} = cellFreq;
-                app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0));
-                app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0));
-                app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0)) / mean(cellFreq(cellFreq>0));
-                app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));
-                app.imgT.SilentCells(idx) = silentCells;
                 app.imgT.NetworkFrequency(idx) = networkFreq;
-                app.imgT.Synchronicity(idx) = syncMean;
-                app.imgT.Synchronicity2(idx) = syncMedian;
-                app.imgT.CoVSynchronicity(idx) = std(networkPeaks) / mean(networkPeaks);
-                app.imgT.QCDSynchronicity(idx) = qcd(networkPeaks);
-                % Calculate the average intensity and duration of the events (not yet taking into account manually added events)
+                app.imgT.SilentCells(idx) = silentCells;
+                spikeProperties = cell2mat(spikeProperties');
+                % Add the descriptors: Mean
+                app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0));
+                app.imgT.MeanInterSpikeInterval(idx) = mean(interSpikeInterval);
+                app.imgT.MeanSynchronicity(idx) = mean(syncPeaks) / sum(cellFreq>0) * 100;
+                app.imgT.MeanTimeToRise(idx) = mean(spikeProperties(1,:));
+                app.imgT.MeanDuration25(idx) = mean(spikeProperties(2,:));
+                app.imgT.MeanDuration50(idx) = mean(spikeProperties(3,:));
+                app.imgT.MeanDuration75(idx) = mean(spikeProperties(4,:));
+                app.imgT.MeanDuration90(idx) = mean(spikeProperties(5,:));
                 app.imgT.MeanIntensity(idx) = mean(tempInt);
+                app.imgT.MeanProminence(idx) = mean(spikeProperties(6,:));
+                app.imgT.MeanTimeToDecay(idx) = mean(spikeProperties(7,:));
+                app.imgT.MeanDecayTau(idx) = mean(spikeProperties(8,:));
+                % Add the descriptors: Median
+                app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0));
+                app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval);
+                app.imgT.MedianSynchronicity(idx) = median(syncPeaks) / sum(cellFreq>0) * 100;
+                app.imgT.MedianTimeToRise(idx) = median(spikeProperties(1,:));
+                app.imgT.MedianDuration25(idx) = median(spikeProperties(2,:));
+                app.imgT.MedianDuration50(idx) = median(spikeProperties(3,:));
+                app.imgT.MedianDuration75(idx) = median(spikeProperties(4,:));
+                app.imgT.MedianDuration90(idx) = median(spikeProperties(5,:));
                 app.imgT.MedianIntensity(idx) = median(tempInt);
+                app.imgT.MedianProminence(idx) = median(spikeProperties(6,:));
+                app.imgT.MedianTimeToDecay(idx) = median(spikeProperties(7,:));
+                app.imgT.MedianDecayTau(idx) = median(spikeProperties(8,:));
+                % Add the descriptors: Coefficient of variation
+                app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0)) / mean(cellFreq(cellFreq>0));
+                app.imgT.CoVInterSpikeInterval(idx) = std(interSpikeInterval) / mean(interSpikeInterval);
+                app.imgT.CoVSynchronicity(idx) = std(syncPeaks) / mean(syncPeaks);
+                app.imgT.CoVTimeToRise(idx) = std(spikeProperties(1,:)) / mean(spikeProperties(1,:));
+                app.imgT.CoVDuration25(idx) = std(spikeProperties(2,:)) / mean(spikeProperties(2,:));
+                app.imgT.CoVDuration50(idx) = std(spikeProperties(3,:)) / mean(spikeProperties(3,:));
+                app.imgT.CoVDuration75(idx) = std(spikeProperties(4,:)) / mean(spikeProperties(4,:));
+                app.imgT.CoVDuration90(idx) = std(spikeProperties(5,:)) / mean(spikeProperties(5,:));
                 app.imgT.CoVIntensity(idx) = std(tempInt) / mean(tempInt);
+                app.imgT.CoVProminence(idx) = std(spikeProperties(6,:)) / mean(spikeProperties(6,:));
+                app.imgT.CoVTimeToDecay(idx) = std(spikeProperties(7,:)) / mean(spikeProperties(7,:));
+                app.imgT.CoVDecayTau(idx) = std(spikeProperties(8,:)) / mean(spikeProperties(8,:));
+                % Add the descriptors: Quantile coefficient of dispersion
+                app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));              
+                app.imgT.QCDInterSpikeInterval(idx) = qcd(interSpikeInterval);
+                app.imgT.QCDSynchronicity(idx) = qcd(syncPeaks);
+                app.imgT.QCDTimeToRise(idx) = qcd(spikeProperties(1,:));
+                app.imgT.QCDDuration25(idx) = qcd(spikeProperties(2,:));
+                app.imgT.QCDDuration50(idx) = qcd(spikeProperties(3,:));
+                app.imgT.QCDDuration75(idx) = qcd(spikeProperties(4,:));
+                app.imgT.QCDDuration90(idx) = qcd(spikeProperties(5,:));
                 app.imgT.QCDIntensity(idx) = qcd(tempInt);
-                app.imgT.MeanDuration(idx) = mean(tempWid);
-                app.imgT.MedianDuration(idx) = median(tempWid);
-                app.imgT.CoVDuration(idx) = std(tempWid) / mean(tempWid);
-                app.imgT.QCDDuration(idx) = qcd(tempWid);
+                app.imgT.QCDProminence(idx) = qcd(spikeProperties(6,:));
+                app.imgT.QCDTimeToDecay(idx) = qcd(spikeProperties(7,:));
+                app.imgT.QCDDecayTau(idx) = qcd(spikeProperties(8,:));
+                % Add the descriptors: Variance
+                app.imgT.VarianceFrequency(idx) = var(cellFreq(cellFreq>0));              
+                app.imgT.VarianceInterSpikeInterval(idx) = var(interSpikeInterval);
+                app.imgT.VarianceSynchronicity(idx) = var(syncPeaks);
+                app.imgT.VarianceTimeToRise(idx) = var(spikeProperties(1,:));
+                app.imgT.VarianceDuration25(idx) = var(spikeProperties(2,:));
+                app.imgT.VarianceDuration50(idx) = var(spikeProperties(3,:));
+                app.imgT.VarianceDuration75(idx) = var(spikeProperties(4,:));
+                app.imgT.VarianceDuration90(idx) = var(spikeProperties(5,:));
+                app.imgT.VarianceIntensity(idx) = var(tempInt);
+                app.imgT.VarianceProminence(idx) = var(spikeProperties(6,:));
+                app.imgT.VarianceTimeToDecay(idx) = var(spikeProperties(7,:));
+                app.imgT.VarianceDecayTau(idx) = var(spikeProperties(8,:));
+                % Add the descriptors: Skewness
+                app.imgT.SkewnessFrequency(idx) = skewness(cellFreq(cellFreq>0),0);              
+                app.imgT.SkewnessInterSpikeInterval(idx) = skewness(interSpikeInterval,0);
+                app.imgT.SkewnessSynchronicity(idx) = skewness(syncPeaks,0);
+                app.imgT.SkewnessTimeToRise(idx) = skewness(spikeProperties(1,:),0);
+                app.imgT.SkewnessDuration25(idx) = skewness(spikeProperties(2,:),0);
+                app.imgT.SkewnessDuration50(idx) = skewness(spikeProperties(3,:),0);
+                app.imgT.SkewnessDuration75(idx) = skewness(spikeProperties(4,:),0);
+                app.imgT.SkewnessDuration90(idx) = skewness(spikeProperties(5,:),0);
+                app.imgT.SkewnessIntensity(idx) = skewness(tempInt,0);
+                app.imgT.SkewnessProminence(idx) = skewness(spikeProperties(6,:),0);
+                app.imgT.SkewnessTimeToDecay(idx) = skewness(spikeProperties(7,:),0);
+                app.imgT.SkewnessDecayTau(idx) = skewness(spikeProperties(8,:),0);
+                % Add the descriptors: Kurtosis
+                app.imgT.KurtosisFrequency(idx) = kurtosis(cellFreq(cellFreq>0),0) - 3;              
+                app.imgT.KurtosisInterSpikeInterval(idx) = kurtosis(interSpikeInterval,0) - 3;
+                app.imgT.KurtosisSynchronicity(idx) = kurtosis(syncPeaks,0) - 3;
+                app.imgT.KurtosisTimeToRise(idx) = kurtosis(spikeProperties(1,:),0) - 3;
+                app.imgT.KurtosisDuration25(idx) = kurtosis(spikeProperties(2,:),0) - 3;
+                app.imgT.KurtosisDuration50(idx) = kurtosis(spikeProperties(3,:),0) - 3;
+                app.imgT.KurtosisDuration75(idx) = kurtosis(spikeProperties(4,:),0) - 3;
+                app.imgT.KurtosisDuration90(idx) = kurtosis(spikeProperties(5,:),0) - 3;
+                app.imgT.KurtosisIntensity(idx) = kurtosis(tempInt,0) - 3;
+                app.imgT.KurtosisProminence(idx) = kurtosis(spikeProperties(6,:),0) - 3;
+                app.imgT.KurtosisTimeToDecay(idx) = kurtosis(spikeProperties(7,:),0) - 3;
+                app.imgT.KurtosisDecayTau(idx) = kurtosis(spikeProperties(8,:),0) - 3;
             end
             delete(hWait);
         end
@@ -879,7 +1200,24 @@ classdef sCaSpA < matlab.apps.AppBase
                                 plot(app.UIAxesPlot, time, spikeThr, ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
                         end
                 end
+                % Refine the plot area
+                if ~app.ZoomXButton.Value
+                    app.MaxStepX = app.UIAxesPlot.XLim(2);
+                    app.ZoomXMin.Value = app.UIAxesPlot.XLim(1);
+                    app.ZoomXMax.Value = app.UIAxesPlot.XLim(2);
+                end
             end
+        end
+        
+        function ZoomButtonPressed(app, event)
+            if app.ZoomXButton.Value
+                newXAxis = [app.ZoomXMin.Value, app.ZoomXMax.Value];
+                app.ZoomStepX = diff(newXAxis);
+                app.UIAxesPlot.XLim = newXAxis;
+            else
+                app.UIAxesPlot.XLim = [0 app.MaxStepX];
+            end
+            figure(app.UIFigure);
         end
     end
     
@@ -955,17 +1293,20 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ButtonNextCell.Enable = 'on';
                     app.CellNumberEditField.Enable = 'on';
                     app.ButtonPreviousCell.Enable = 'on';
+                    app.AddPeakButton.Enable = 'on';
+                    app.RemovePeakButton.Enable = 'on';
                 case 'MeanPlot'
                     app.ButtonNextCell.Enable = 'off';
                     app.CellNumberEditField.Enable = 'off';
                     app.ButtonPreviousCell.Enable = 'off';
+                    app.AddPeakButton.Enable = 'off';
+                    app.RemovePeakButton.Enable = 'off';
                 case 'Quantification'
                     app.QuantifyButton.Enable = 'on';
-                    app.AddPeakButton.Enable = 'on';
-                    app.RemovePeakButton.Enable = 'on';
-                    app.LabelPeakButton.Enable = 'on';
-                    app.LabelFeatButton.Enable = 'on';
-                    app.ExporttraceButton.Enable = 'on';
+                    app.LabelPeakButton.Enable = 'off';
+                    app.LabelFeatButton.Enable = 'off';
+                    app.ExporttraceButton.Enable = 'off';
+                    app.FileMenuExport.Enable = 'on';
             end
         end
         
@@ -1114,7 +1455,24 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
             end
             app.imgT{imgFltr, 'DetrendData'} = tempDetrend;
-        end        
+        end
+        
+        function ScrollDetected(app, event)
+            if app.ZoomXButton.Value
+                if nargin == 2
+                    newXAxis = app.UIAxesPlot.XLim + (0.5 * app.ZoomStepX * event.VerticalScrollCount);
+                    if newXAxis(1) < 0
+                        newXAxis = [0 app.ZoomStepX];
+                    end
+                    if newXAxis(2) > app.MaxStepX
+                        newXAxis = [app.MaxStepX-app.ZoomStepX app.MaxStepX];
+                    end
+                    app.UIAxesPlot.XLim = newXAxis;
+                    app.ZoomXMin.Value = newXAxis(1);
+                    app.ZoomXMax.Value = newXAxis(2);
+                end
+            end
+        end
     end
     
     % Component initialization
@@ -1122,7 +1480,8 @@ classdef sCaSpA < matlab.apps.AppBase
         function createComponents(app)
             
             % Create UIFigure and hide until all components are created
-            app.UIFigure = uifigure('Visible', 'off', 'Position', [100 100 1485 1000], 'Name', 'sCaSpA: Spontaneous Calcium Spikes Analysis');
+            app.UIFigure = uifigure('Visible', 'off', 'Position', [100 100 1485 1000], 'Name', sprintf('sCaSpA: Spontaneous Calcium Spikes Analysis %s', app.options.UIVersion),...
+                'WindowScrollWheelFcn', @(~,event)ScrollDetected(app, event));
             % Create the file menu
             app.FileMenu = uimenu(app.UIFigure, 'Text', 'File');
             app.FileMenuOpen = uimenu(app.FileMenu, 'Text', 'Load new data',...
@@ -1172,7 +1531,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.UIAxesMovie.Toolbar.Visible = 'off';
             app.SliderMovie = uislider(app.UIFigure, 'MajorTicks', [], 'MinorTicks', [], 'Position', [553 453 460 3], 'Visible', 'off');
             % Create the axis for the plots
-            app.UIAxesPlot = uiaxes(app.UIFigure, 'Position', [15 10 1008 424]);
+            app.UIAxesPlot = uiaxes(app.UIFigure, 'Position', [15 10 1008 424], 'ButtonDownFcn', createCallbackFcn(app, @DetectClickPlot, true));
             title(app.UIAxesPlot, 'Ca^{2+} Trace'); xlabel(app.UIAxesPlot, 'Time (s)'); ylabel(app.UIAxesPlot, '\DeltaF/F_0'); app.UIAxesPlot.TickDir = 'out';
             app.UIAxesPlot.Toolbar.Visible = 'off';
             % Create Network Activity Options Panel
@@ -1230,15 +1589,18 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ButtonPushedFcn', createCallbackFcn(app, @detectSpikes, true));
             app.QuantifyButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [333 31 100 22], 'Text', 'Quantify', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @QuantifySpikes, false));
-            app.AddPeakButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [223 8 100 22], 'Text', 'Add Peak', 'Enable', 'off');
-            app.RemovePeakButton = uibutton(app.SpikeDetectionPanel, 'push', 'Position', [332 8 100 22], 'Text', 'Remove Peak', 'Enable', 'off');
+            app.AddPeakButton = uibutton(app.SpikeDetectionPanel, 'state', 'Position', [223 8 100 22], 'Text', 'Add Peak', 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @crosshairPlot, true));
+            app.RemovePeakButton = uibutton(app.SpikeDetectionPanel, 'state', 'Position', [332 8 100 22], 'Text', 'Remove Peak', 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @crosshairPlot, true));
             % Create Plot Interaction Panel
             app.PlotInteractionPanel = uipanel(app.UIFigure, 'Title', 'Plot Interaction', 'Position', [1022 280 453 118]);
             app.PlotTypeButtonGroup = uibuttongroup(app.PlotInteractionPanel, 'Title', 'Plot Type', 'Position', [7 8 123 86],...
                 'SelectionChangedFcn', createCallbackFcn(app, @changePlotType, true));
             app.AllAndMeanButton = uitogglebutton(app.PlotTypeButtonGroup, 'Text', 'All And Mean', 'Position', [11 33 100 22], 'Value',  true, 'Enable', 'off');
             app.SingleTraceButton = uitogglebutton(app.PlotTypeButtonGroup, 'Text', 'Single Trace', 'Position', [11 12 100 22], 'Enable', 'off');
-            app.ZoomXButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [136 72 100 22], 'Text', 'Zoom X', 'Enable', 'off');
+            app.ZoomXButton = uibutton(app.PlotInteractionPanel, 'state', 'Position', [136 72 100 22], 'Text', 'Zoom X', 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ZoomButtonPressed, true));
             app.ZoomXMin = uieditfield(app.PlotInteractionPanel, 'numeric', 'Position', [236 72 50 22], 'Enable', 'off');
             app.ZoomXMax = uieditfield(app.PlotInteractionPanel, 'numeric', 'Position', [286 72 50 22], 'Enable', 'off');
             app.FixYAxisButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 72 100 22], 'Text', 'Fix Y Axis', 'Enable', 'off');
@@ -1328,6 +1690,8 @@ classdef sCaSpA < matlab.apps.AppBase
         % Construct app
         function app = sCaSpA
             startSettings(app);
+            % Add the version to the option
+            app.options.UIVersion = sprintf('%d.%d#%d', app.majVer, app.minVer, app.dailyBuilt);
             % Create UIFigure and components
             createComponents(app)
             toggleInteractions(app, 'Startup');
@@ -1342,7 +1706,7 @@ classdef sCaSpA < matlab.apps.AppBase
         % Code that executes before app deletion
         function delete(app)
             saveSettings(app);
-            if app.newChange
+            if app.bWarnings.SaveFile
                 % If the data is not saved, ask if it needs to be saved
                 answer = questdlg('Do you want to save the data?', 'Save before closing');
                 switch answer
