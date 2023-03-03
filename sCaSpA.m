@@ -55,6 +55,8 @@ classdef sCaSpA < matlab.apps.AppBase
         ROISizepxsEditFieldLabel       matlab.ui.control.Label
         ROIShapeDropDown               matlab.ui.control.DropDown
         ROIShapeDropDownLabel          matlab.ui.control.Label
+        ROIExpectedEditFieldLabel      matlab.ui.control.Label
+        ROIExpectedEditField           matlab.ui.control.NumericEditField
         DetectionOptionsPanel          matlab.ui.container.Panel
         TraceToUseDropDown             matlab.ui.control.DropDown
         TracetouseDropDownLabel        matlab.ui.control.Label
@@ -140,8 +142,9 @@ classdef sCaSpA < matlab.apps.AppBase
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
         minVer = 0;
         % minor versions - 230228 = 0 -> basic functionality implemented
-        dailyBuilt = 1;
+        dailyBuilt = 2;
         % bug fixes      - 230228 = 1 -> tested workflow in one dataset
+        %                - 230302 = 2 -> add aproximate number or cell per FOV
     end
     
     % Callbacks methods
@@ -160,7 +163,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Save the path to the settings
                 app.options.LastPath = imgPath;
                 % Load the data starting from the DIC/BF/Still image
-                hWait = waitbar(0, 'Loading images data');
+                hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading images data');
                 imgFiles = dir(fullfile(imgPath, '*.tif'));
                 % Populate the DIC table
                 dicFltr = contains({imgFiles.name}, app.options.StillCondition)';
@@ -181,7 +184,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 dicHeight = dicInfo(1).Height;
                 tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, 'uint8')}, height(tempT), 1);
                 for i = 1:size(tempT,1)
-                    waitbar(i/sum(dicFltr), hWait, sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100));
+                    hWait.Value = i/sum(dicFltr);
+                    hWait.Message = sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100);
                     dicFile = tempT.Filename{i};
                     for c = 1:app.nChannel                   
                         tempDicImage{i,1}(:,:,c) = imread(dicFile,c);
@@ -202,7 +206,8 @@ classdef sCaSpA < matlab.apps.AppBase
                     warndlg('name missmatch, but I don''t know what to do');
                 end
                 for i = 1:numel(imgFltr)
-                    waitbar(i/numel(imgFltr), hWait, sprintf('Loading movie data %0.2f%%', i/numel(imgFltr)*100));
+                    hWait.Value = i/numel(imgFltr);
+                    hWait.Message = sprintf('Loading movie data %0.2f%%', i/numel(imgFltr)*100);
                     tempT{i+1,3} = weeknum(datetime(imgIDs{i}{1}, 'InputFormat', 'yyMMdd'));
                     tempT{i+1,4} = imgIDs{i}{3};
                     tempT{i+1,5} = imgIDs{i}{4};
@@ -218,7 +223,7 @@ classdef sCaSpA < matlab.apps.AppBase
                             if isinf(T)
                                 T = 1/(app.options.Frequency);
                             end
-                        case 'Others'
+                        case 'Other'
                             if app.options.Frequency > 0
                                 T = 1/(app.options.Frequency);
                             else
@@ -233,7 +238,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         tempT{i+1,9} = {[imgInfo.StripOffsets]};
                     end
                 end
-                delete(hWait);
+                close(hWait);
                 app.imgT = cell2table(tempT(2:end,:), 'VariableNames', tempT(1,:));
                 % Populate tehe DIC dropdown menu and show the first image
                 app.currDIC = app.dicT.CellID{1};
@@ -424,6 +429,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.options.Frequency = app.FrequencyEditField.Value;
             app.options.RoiSize = app.ROISizepxsEditField.Value;
             app.options.RoiShape = app.ROIShapeDropDown.Value;
+            app.options.ExpectedRoi = app.ROIExpectedEditField.Value;
             app.options.PeakMinHeight = app.MethodDropDown.Value;
             app.options.SigmaThr = app.ThresholdEditField.Value;
             app.options.PeakMinProminance = app.MinProminanceEditField.Value;
@@ -583,7 +589,7 @@ classdef sCaSpA < matlab.apps.AppBase
         function DetectClickDIC(app, event)
             if event.Button == 3
                 if ~app.bZoom
-                    zoomF = 50;
+                    zoomF = 200;
                     % Zoom in
                     zoomPoint = round(event.IntersectionPoint);
                     xMin = max(0, zoomPoint(1) - zoomF);
@@ -639,30 +645,49 @@ classdef sCaSpA < matlab.apps.AppBase
             switch app.DetectionButtonGroup.SelectedObject.Text
                 case 'All FOVs'
                     imgIdx = 1:height(app.imgT);
+                    nImages = numel(imgIdx);
                 otherwise
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
+                    nImages = 1;
             end
-            hWait = waitbar(0, 'Detecting ROIs');
+            
             for idx = imgIdx
-                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting ROIs %0.2f%%', idx/numel(imgIdx)*100));
+                hWait.Message = sprintf('Detecting ROIs %0.2f%%', idx/nImages*100);
                 % First the image and do some filtering
                 img = imread(app.imgT.Filename{idx});
-                gaussImg = imgaussfilt(img, app.options.RoiSize*2);
-                gaussImg = img-gaussImg;
+                gaussImg = imgaussfilt(img, app.options.RoiSize*4);
+                gaussImg = imgaussfilt(img-gaussImg,1);
                 % Perform a multilevel threshold
-                thrValues = multithresh(gaussImg, 2);
-                thrFltr = imquantize(gaussImg, thrValues(1)) - 1; % Since there are 2 levels, to get to the fltr remove the level 1
-                % Try to remove the small unwanted detection
-                bwImg = bwareaopen(thrFltr, app.options.RoiSize^2, 8); % The 8 is 8-connected
-                % Get the center of the regions
-                roiProp = regionprops('table', bwImg, 'basic');
+                nIter = 0;
+                nThr = 3;
+                roiProp = table;
+                while height(roiProp) < app.options.ExpectedRoi * 1.5
+                    thrValues = multithresh(gaussImg, nThr);
+                    thrFltr = imquantize(gaussImg, thrValues) >= (nThr+1 -nIter); % Remove the first layer
+                    % Try to remove the small unwanted detection
+                    bwImg = bwareaopen(thrFltr, app.options.RoiSize^2, 8); % The 8 is 8-connected
+                    % Get the center of the regions
+                    roiProp = regionprops('table', bwImg, 'basic');
+                    nIter = nIter+1;
+                    if nIter == nThr || height(roiProp) > app.options.ExpectedRoi * 2.5
+                        nThr = nThr-1;
+                    end
+                end
+%                 thrValues = multithresh(gaussImg, 2);
+%                 if height(roiProp) > app.options.ExpectedRoi * 2.5
+%                     thrFltr = imquantize(gaussImg, thrValues) == 3;
+%                     bwImg = bwareaopen(thrFltr, app.options.RoiSize^2, 8);
+%                     roiProp = regionprops('table', bwImg, 'basic');
+%                 end
                 % Add the regions to the dicT
-                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
-                app.dicT.RoiSet{idx} = round(roiProp.Centroid);
-                getIntensity(app, idx);
+                if height(roiProp) > 1
+                    app.dicT.RoiSet{idx} = round(roiProp.Centroid);
+                    
+                    getIntensity(app, idx);
+                end
             end
-            delete(hWait)
             app.bWarnings.SaveFile = true;
+            modifyROIs(app, 'Modify')
             updatePlot(app);
             toggleInteractions(app, 'Detection');
         end
@@ -727,9 +752,10 @@ classdef sCaSpA < matlab.apps.AppBase
                 otherwise
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
             end
-            hWait = waitbar(0, 'Detecting spike in data');
+            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Detection', 'Message', 'Detecting spike in data');
             for idx = imgIdx'
-                waitbar(idx/numel(imgIdx), hWait, sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100));
+                hWait.Value = idx/numel(imgIdx);
+                hWait.Message = sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100);
                 % Gather the image data
                 tempData = cell2mat(app.imgT{idx, 'DetrendData'});
                 if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
@@ -784,10 +810,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.imgT.SpikeWidths{idx} = spikeWidths;
                 end
             end
-            % Add a raster plot
-            %             spikeRaster = spikeRaster .* repmat((1:nTraces)', 1, nFrames);
-            %             app.imgT.SpikeRaster{imgIdx} = spikeRaster;
-            delete(hWait)
+            close(hWait)
             app.bWarnings.SaveFile = true;
             updatePlot(app);
             toggleInteractions(app, 'Quantification');
@@ -954,9 +977,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 otherwise
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
             end
-            hWait = waitbar(0, 'Detecting spike in data');
+            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Quantifying spikes', 'Message', 'Quantifying spikes in cell: ', 'Indeterminate', 'on');
             for idx = imgIdx'
-                waitbar(idx/numel(imgIdx), hWait, sprintf('Quantifying spikes in cell: %d', idx));
+                hWait.Message = sprintf('Quantifying spikes in FOV: %d', idx);
                 % Gather the important data
                 Fs = app.imgT.ImgProperties(idx,4);
                 tempData = app.imgT.DetrendData{idx};
@@ -1105,7 +1128,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.KurtosisTimeToDecay(idx) = kurtosis(spikeProperties(7,:),0) - 3;
                 app.imgT.KurtosisDecayTau(idx) = kurtosis(spikeProperties(8,:),0) - 3;
             end
-            delete(hWait);
+            close(hWait);
         end
     end
     
@@ -1154,6 +1177,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 switch app.PlotTypeButtonGroup.SelectedObject.Text
                     case 'All And Mean'
                         hold(app.UIAxesPlot, 'on')
+                        legend(app.UIAxesPlot, 'off');
                         % Before plotting anything, try to plot the spikes
                         hLeg(1) = plot(app.UIAxesPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
                         plot(app.UIAxesPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
@@ -1256,6 +1280,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowMovieButton.Enable = 'on';
                     app.ROIShapeDropDown.Enable = 'on';
                     app.ROISizepxsEditField.Enable = 'on';
+                    app.ROIExpectedEditField.Enable = 'on';
                     app.RegistrationCheckBox.Enable = 'on';
                     app.ReferenceConditionEditField.Enable = 'on';
                     app.ZoomXButton.Enable = 'on';
@@ -1387,15 +1412,14 @@ classdef sCaSpA < matlab.apps.AppBase
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
-%             hWait = waitbar(0, 'Loading image...');
-            loadTime = 100;
+            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading ROIs', 'Message', 'Loading ROIs', 'Indeterminate', 'on');
             for i = 1:nImages
-%                 waitbar(i/nImages, hWait, sprintf('Loading data (Remaining time ~%0.2f s)', (nImages-i+1)*loadTime));
                 tic
+                nRoi = size(tempRoi,1);
+                hWait.Message = sprintf('Getting %d ROIs intensity in FOV: %s', nRoi, app.imgT.CellID{imgFltr(i)});
                 imgData = loadTiff(app.imgT.Filename{imgFltr(i)}, app.imgT.ImgProperties(imgFltr(i),:), 0);
                 nFrames = size(imgData, 3);
                 % Get the Z profile of the ROIs
-                nRoi = size(tempRoi,1);
                 roiIntensities = zeros(nRoi, nFrames);
                 for roi = 1:nRoi
                     currRoi = [tempRoi(roi,:) - app.options.RoiSize tempRoi(roi,:) + app.options.RoiSize];
@@ -1421,8 +1445,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
                 loadTime = toc;
             end
-%             detrendData(app)
-%             delete(hWait);
+            close(hWait);
             togglePointer(app);
             warning('on', 'all');
         end
@@ -1565,6 +1588,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.ROISizepxsEditFieldLabel = uilabel(app.ROIsOptionsPanel, 'Position', [8 64 84 22], 'Text', 'ROI Size (pxs)');
             app.ROISizepxsEditField = uieditfield(app.ROIsOptionsPanel, 'numeric', 'Position', [89 64 90 22], 'Value',  app.options.RoiSize, 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @ChangedROI, false));
+            app.ROIExpectedEditFieldLabel = uilabel(app.ROIsOptionsPanel, 'Position', [8 4 84 22], 'Text', 'ROIs #');
+            app.ROIExpectedEditField = uieditfield(app.ROIsOptionsPanel, 'numeric', 'Position', [89 4 90 22], 'Value',  app.options.ExpectedRoi, 'Enable', 'off');
             app.RegistrationOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'Registration Options', 'Position', [10 40 184 104]);
             app.RegistrationCheckBox = uicheckbox(app.RegistrationOptionsPanel, 'Text', 'Registration', 'Position', [9 54 86 22], 'Enable', 'off', 'Value', app.options.Registration);
             app.ReferenceConditionLabel = uilabel(app.RegistrationOptionsPanel, 'Position', [8 29 118 22], 'Text', 'Reference Condition:');
@@ -1631,6 +1656,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 addSetting(s.sCaSpA, 'Frequency', 'PersonalValue', 8);
                 addSetting(s.sCaSpA, 'RoiSize', 'PersonalValue', 5);
                 addSetting(s.sCaSpA, 'RoiShape', 'PersonalValue', 'Square');
+                addSetting(s.sCaSpA, 'ExpectedRoi', 'PersonalValue', 20);
                 addSetting(s.sCaSpA, 'PeakMinHeight', 'PersonalValue', 'MAD');
                 addSetting(s.sCaSpA, 'SigmaThr', 'PersonalValue', 2);
                 addSetting(s.sCaSpA, 'PeakMinProminance', 'PersonalValue', 0.1);
@@ -1649,6 +1675,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.options.Frequency = s.sCaSpA.Frequency.ActiveValue;
             app.options.RoiSize = s.sCaSpA.RoiSize.ActiveValue;
             app.options.RoiShape = s.sCaSpA.RoiShape.ActiveValue;
+            app.options.ExpectedRoi = s.sCaSpA.ExpectedRoi.ActiveValue;
             app.options.PeakMinHeight = s.sCaSpA.PeakMinHeight.ActiveValue;
             app.options.SigmaThr = s.sCaSpA.SigmaThr.ActiveValue;
             app.options.PeakMinProminance = s.sCaSpA.PeakMinProminance.ActiveValue;
@@ -1671,6 +1698,7 @@ classdef sCaSpA < matlab.apps.AppBase
             s.sCaSpA.Frequency.PersonalValue = app.options.Frequency;
             s.sCaSpA.RoiSize.PersonalValue = app.options.RoiSize;
             s.sCaSpA.RoiShape.PersonalValue = app.options.RoiShape;
+            s.sCaSpA.ExpectedRoi.PersonalValue = app.options.ExpectedRoi;
             s.sCaSpA.PeakMinHeight.PersonalValue = app.options.PeakMinHeight;
             s.sCaSpA.SigmaThr.PersonalValue = app.options.SigmaThr;
             s.sCaSpA.PeakMinProminance.PersonalValue = app.options.PeakMinProminance;
