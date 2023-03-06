@@ -650,9 +650,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
                     nImages = 1;
             end
-            
             for idx = imgIdx
-                hWait.Message = sprintf('Detecting ROIs %0.2f%%', idx/nImages*100);
                 % First the image and do some filtering
                 img = imread(app.imgT.Filename{idx});
                 gaussImg = imgaussfilt(img, app.options.RoiSize*4);
@@ -680,9 +678,8 @@ classdef sCaSpA < matlab.apps.AppBase
 %                     roiProp = regionprops('table', bwImg, 'basic');
 %                 end
                 % Add the regions to the dicT
-                if height(roiProp) > 1
+                if height(roiProp) >= 1
                     app.dicT.RoiSet{idx} = round(roiProp.Centroid);
-                    
                     getIntensity(app, idx);
                 end
             end
@@ -754,7 +751,9 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             hWait = uiprogressdlg(app.UIFigure, 'Title', 'Detection', 'Message', 'Detecting spike in data');
             for idx = imgIdx'
-                hWait.Value = idx/numel(imgIdx);
+                if numel(imgIdx) > 1
+                    hWait.Value = idx/numel(imgIdx);
+                end
                 hWait.Message = sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100);
                 % Gather the image data
                 tempData = cell2mat(app.imgT{idx, 'DetrendData'});
