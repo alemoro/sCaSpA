@@ -16,7 +16,7 @@ classdef sCaSpA < matlab.apps.AppBase
         ExporttraceButton              matlab.ui.control.Button
         LabelFeatButton                matlab.ui.control.Button
         LabelPeakButton                matlab.ui.control.Button
-        FixYAxisButton                 matlab.ui.control.Button
+        FixYAxisButton                 matlab.ui.control.StateButton
         ZoomXMax                       matlab.ui.control.NumericEditField
         ZoomXMin                       matlab.ui.control.NumericEditField
         ZoomXButton                    matlab.ui.control.StateButton
@@ -127,6 +127,7 @@ classdef sCaSpA < matlab.apps.AppBase
         bZoom = false;
         ZoomStepX
         MaxStepX
+        MaxValY % Maximum Y value for the FOV
         bWarnings = struct('AddEvents', true,...
                            'RemoveEvents', true,...
                            'SaveFile', false);
@@ -142,9 +143,10 @@ classdef sCaSpA < matlab.apps.AppBase
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
         minVer = 0;
         % minor versions - 230228 = 0 -> basic functionality implemented
-        dailyBuilt = 2;
+        dailyBuilt = 3;
         % bug fixes      - 230228 = 1 -> tested workflow in one dataset
         %                - 230302 = 2 -> add aproximate number or cell per FOV
+        %                - 230307 = 3 -> add the fix Y axis properties
     end
     
     % Callbacks methods
@@ -331,24 +333,27 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function ImportROIs(app)
             roiPath = uigetdir(app.options.LastPath, 'Select ROI folder');
-            roiFiles = dir(fullfile(roiPath, '*.zip'));
+            fileExt = '*.csv';
+            roiFiles = dir(fullfile(roiPath, fileExt));
             togglePointer(app);
             figure(app.UIFigure);
             try
                 % Get the name info
-                nameList = regexprep({roiFiles.name}, '.zip', '');
+                nameList = regexprep({roiFiles.name}, fileExt, '');
                 nameParts = regexp(nameList, '_', 'split')';
                 nFiles = numel(nameList);
                 allRois = cell(size(app.imgT,1), 1);
-                hWait = waitbar(0, 'Importing ROI data');
                 for f = 1:nFiles
-                    waitbar(f/nFiles, hWait, sprintf('Loading ROIs data: %d / %d', f, nFiles));
                     % Match the ROI to the expetimentID
                     expID = [nameParts{f}{2} '_' nameParts{f}{4}];
                     cellFltr = matches(app.dicT.ExperimentID, expID);
                     % Extract the ROIs
-                    tempRoi = ReadImageJROI(fullfile({roiFiles(f).folder}, {roiFiles(f).name}));
-                    tempRoi = cellfun(@(x) x.vnRectBounds, tempRoi{:}, 'UniformOutput', false);
+                    if contains(fileExt, '*.zip')
+                        tempRoi = ReadImageJROI(fullfile({roiFiles(f).folder}, {roiFiles(f).name}));
+                        tempRoi = cellfun(@(x) x.vnRectBounds, tempRoi{:}, 'UniformOutput', false);
+                    else
+                        tempRoi = ReadImageJROI(fullfile({roiFiles(f).folder}, {roiFiles(f).name}));
+                    end
                     % Get the center coordinate
                     tempRoi = cellfun(@(x) round([mean(x([2 4])), mean(x([1 3]))]), tempRoi, 'UniformOutput', false);
                     % Add the ROI to the right cells
@@ -357,7 +362,6 @@ classdef sCaSpA < matlab.apps.AppBase
                     getIntensity(app)
                 end
                 app.dicT.RoiSet = allRois;
-                delete(hWait);
                 togglePointer(app)
             catch ME
                 delete(hWait);
@@ -549,36 +553,6 @@ classdef sCaSpA < matlab.apps.AppBase
             end
         end
         
-        function crosshairDIC(app, event)
-            if strcmp(app.UIFigure.Pointer, 'arrow')
-                app.UIFigure.Pointer = 'crosshair';
-                app.AddROIsButton.Enable = app.AddROIsButton.Value;
-                app.DeleteROIsButton.Enable = app.DeleteROIsButton.Value;
-            else
-                app.UIFigure.Pointer = 'arrow';
-                app.AddROIsButton.Enable = 'on';
-                app.DeleteROIsButton.Enable = 'on';
-                app.AddROIsButton.Value = false;
-                app.DeleteROIsButton.Value = false;
-                modifyROIs(app, event.Source.Text);
-            end
-        end
-        
-        function crosshairPlot(app, event)
-            if strcmp(app.UIFigure.Pointer, 'arrow')
-                app.UIFigure.Pointer = 'crosshair';
-                app.AddPeakButton.Enable = app.AddPeakButton.Value;
-                app.RemovePeakButton.Enable = app.RemovePeakButton.Value;
-            else
-                app.UIFigure.Pointer = 'arrow';
-                app.AddPeakButton.Enable = 'on';
-                app.RemovePeakButton.Enable = 'on';
-                app.AddPeakButton.Value = false;
-                app.RemovePeakButton.Value = false;
-                modifyPeaks(app, event.Source.Text);
-            end
-        end
-        
         function ChangedROI(app)
             app.changeROI = true;
         end
@@ -650,7 +624,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
                     nImages = 1;
             end
+            hWait = uiprogressdlg(app.UIFigure, 'Message', 'Detecting ROIs', 'Title', 'Detecting ROIs', 'Indeterminate', 'on');
             for idx = imgIdx
+                hWait.Message = sprintf('Detecting ROIs in: %s', app.imgT.CellID{idx});
                 % First the image and do some filtering
                 img = imread(app.imgT.Filename{idx});
                 gaussImg = imgaussfilt(img, app.options.RoiSize*4);
@@ -669,6 +645,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     nIter = nIter+1;
                     if nIter == nThr || height(roiProp) > app.options.ExpectedRoi * 2.5
                         nThr = nThr-1;
+                        nIter = 0;
                     end
                 end
 %                 thrValues = multithresh(gaussImg, 2);
@@ -680,7 +657,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Add the regions to the dicT
                 if height(roiProp) >= 1
                     app.dicT.RoiSet{idx} = round(roiProp.Centroid);
-                    getIntensity(app, idx);
+                    getIntensity(app, idx, hWait);
                 end
             end
             app.bWarnings.SaveFile = true;
@@ -843,7 +820,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.tempAddPeak.Int = allInt(1:end-1);
                         app.tempAddPeak.FWHM = allWidth(1:end-1);
                     else
-                        warndlg(sprintf('There are no new manually added peaks.\nTo remove an automatically added peak use the "Remove Peak" button'), 'No new peaks');
+                        uialert(app.UIFigure, sprintf('There are no new manually added peaks.\nTo remove an automatically added peak use the "Remove Peak" button'), 'No new peaks');
                     end
                 else
                     % Define the searching area
@@ -866,7 +843,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     newProm = newProm(newFltr);
                     % Check if there are other spikes in this area
                     if any(allLoc >= searchArea(1) & allLoc <= searchArea(end))
-                        errordlg('Peak already detected in this area', 'No more peaks');
+                        uialert(app.UIFigure, 'Peak already detected in this area', 'No more peaks', 'Icon','warning');
                     else
                         % Show the new point
                         plot(app.UIAxesPlot, (newLoc)/Fs, newInt, 'o', 'color', app.keepColor(4,:), 'LineWidth', 1.5);
@@ -889,7 +866,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         delete(app.UIAxesPlot.Children(1));
                         app.tempRemovePeak = app.tempRemovePeak(1:end-1);
                     else
-                        warndlg('There are no manually deleted peaks.', 'No new peaks');
+                        uialert(app.UIFigure, 'There are no manually deleted peaks.', 'No new peaks', 'Icon','warning');
                     end
                 else
                     % Define the searching area
@@ -1148,7 +1125,6 @@ classdef sCaSpA < matlab.apps.AppBase
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
             nRoi = size(app.imgT.DetrendData{tempCell}, 1);
             if strcmp(event.EventName, 'ButtonPushed')
-                
                 % if + or - were pressed, make sure to stay in the range of available ROIs
                 if strcmp(event.Source.Text, '+')
                     app.CellNumberEditField.Value = min(app.CellNumberEditField.Value + 1, nRoi);
@@ -1163,6 +1139,23 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
             end
             updatePlot(app);
+        end
+        
+        function FixYAxis(app)
+            if isempty(app.MaxValY)
+                imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                tempData = app.imgT.DetrendData{imgID};
+                yMin = min(tempData, [], 'all');
+                yMax = max(tempData, [], 'all');
+                app.MaxValY = [yMin, yMax];
+            end
+            if app.FixYAxisButton.Value
+                app.UIAxesPlot.YLim = app.MaxValY;
+                app.FixYAxisButton.BackgroundColor = app.keepColor(3,:);
+            else
+                app.UIAxesPlot.YLimMode = 'auto';
+                app.FixYAxisButton.BackgroundColor = [.94 .94 .94];
+            end
         end
         
         function updatePlot(app)
@@ -1224,6 +1217,9 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                 end
                 % Refine the plot area
+                if app.FixYAxisButton.Value
+                    app.UIAxesPlot.YLim = app.MaxValY;
+                end
                 if ~app.ZoomXButton.Value
                     app.MaxStepX = app.UIAxesPlot.XLim(2);
                     app.ZoomXMin.Value = app.UIAxesPlot.XLim(1);
@@ -1396,7 +1392,37 @@ classdef sCaSpA < matlab.apps.AppBase
                 case 'Movie'
             end
         end
-               
+        
+        function crosshairDIC(app, event)
+            if strcmp(app.UIFigure.Pointer, 'arrow')
+                app.UIFigure.Pointer = 'crosshair';
+                app.AddROIsButton.Enable = app.AddROIsButton.Value;
+                app.DeleteROIsButton.Enable = app.DeleteROIsButton.Value;
+            else
+                app.UIFigure.Pointer = 'arrow';
+                app.AddROIsButton.Enable = 'on';
+                app.DeleteROIsButton.Enable = 'on';
+                app.AddROIsButton.Value = false;
+                app.DeleteROIsButton.Value = false;
+                modifyROIs(app, event.Source.Text);
+            end
+        end
+        
+        function crosshairPlot(app, event)
+            if strcmp(app.UIFigure.Pointer, 'arrow')
+                app.UIFigure.Pointer = 'crosshair';
+                app.AddPeakButton.Enable = app.AddPeakButton.Value;
+                app.RemovePeakButton.Enable = app.RemovePeakButton.Value;
+            else
+                app.UIFigure.Pointer = 'arrow';
+                app.AddPeakButton.Enable = 'on';
+                app.RemovePeakButton.Enable = 'on';
+                app.AddPeakButton.Value = false;
+                app.RemovePeakButton.Value = false;
+                modifyPeaks(app, event.Source.Text);
+            end
+        end
+        
         function getIntensity(app, varargin)
             % First get the image where to run the analysis
             warning('off', 'all');
@@ -1411,7 +1437,11 @@ classdef sCaSpA < matlab.apps.AppBase
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
-            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading ROIs', 'Message', 'Loading ROIs', 'Indeterminate', 'on');
+            if nargin < 3
+                hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading ROIs', 'Message', 'Loading ROIs', 'Indeterminate', 'on');
+            else
+                %hWait = varargin{2};
+            end
             for i = 1:nImages
                 tic
                 nRoi = size(tempRoi,1);
@@ -1444,7 +1474,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
                 loadTime = toc;
             end
-            close(hWait);
+            if nargin < 3
+                close(hWait);
+            end
             togglePointer(app);
             warning('on', 'all');
         end
@@ -1627,7 +1659,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ValueChangedFcn', createCallbackFcn(app, @ZoomButtonPressed, true));
             app.ZoomXMin = uieditfield(app.PlotInteractionPanel, 'numeric', 'Position', [236 72 50 22], 'Enable', 'off');
             app.ZoomXMax = uieditfield(app.PlotInteractionPanel, 'numeric', 'Position', [286 72 50 22], 'Enable', 'off');
-            app.FixYAxisButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 72 100 22], 'Text', 'Fix Y Axis', 'Enable', 'off');
+            app.FixYAxisButton = uibutton(app.PlotInteractionPanel, 'state', 'Position', [348 72 100 22], 'Text', 'Fix Y Axis', 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @FixYAxis, false));
             app.CellNumberLabel = uilabel(app.PlotInteractionPanel, 'Position', [138 40 72 22], 'Text', 'Cell Number');
             app.ButtonNextCell = uibutton(app.PlotInteractionPanel, 'push', 'Position', [288 40 25 22], 'Text', '+', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @changePlotTrace, true));
