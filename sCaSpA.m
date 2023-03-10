@@ -97,6 +97,7 @@ classdef sCaSpA < matlab.apps.AppBase
         DICCh1                         matlab.ui.control.ToggleButton
         DICCh2                         matlab.ui.control.ToggleButton
         DICCh3                         matlab.ui.control.ToggleButton
+        OtherInteractionPanel          matlab.ui.container.Panel
     end
     
     % File storage properties
@@ -143,10 +144,11 @@ classdef sCaSpA < matlab.apps.AppBase
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
         minVer = 0;
         % minor versions - 230228 = 0 -> basic functionality implemented
-        dailyBuilt = 3;
+        dailyBuilt = 4;
         % bug fixes      - 230228 = 1 -> tested workflow in one dataset
         %                - 230302 = 2 -> add aproximate number or cell per FOV
         %                - 230307 = 3 -> add the fix Y axis properties
+        %                - 230309 = 4 -> fix detecting ROIs getting the intensity from all the FOVs correct the fix Y axis
     end
     
     % Callbacks methods
@@ -551,6 +553,7 @@ classdef sCaSpA < matlab.apps.AppBase
             if ~isempty(app.patchMask)
                 copyobj(app.patchMask, app.UIAxesMovie)
             end
+            app.MaxValY = [];
         end
         
         function ChangedROI(app)
@@ -729,7 +732,7 @@ classdef sCaSpA < matlab.apps.AppBase
             hWait = uiprogressdlg(app.UIFigure, 'Title', 'Detection', 'Message', 'Detecting spike in data');
             for idx = imgIdx'
                 if numel(imgIdx) > 1
-                    hWait.Value = idx/numel(imgIdx);
+                    hWait.Value = idx/max(imgIdx);
                 end
                 hWait.Message = sprintf('Detecting spike in data %0.2f%%', idx/numel(imgIdx)*100);
                 % Gather the image data
@@ -937,6 +940,7 @@ classdef sCaSpA < matlab.apps.AppBase
                          app.imgT.SpikeIntensities{imgIdx}{cellN}(removeIdx) = [];
                          app.imgT.SpikeWidths{imgIdx}{cellN}(removeIdx) = [];
                          app.tempRemovePeak = [];
+                         updatePlot(app);
                      end
             end
         end
@@ -1147,7 +1151,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempData = app.imgT.DetrendData{imgID};
                 yMin = min(tempData, [], 'all');
                 yMax = max(tempData, [], 'all');
-                app.MaxValY = [yMin, yMax];
+                app.MaxValY = [yMin-0.05*yMin, yMax+0.05*yMax];
             end
             if app.FixYAxisButton.Value
                 app.UIAxesPlot.YLim = app.MaxValY;
@@ -1218,6 +1222,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 % Refine the plot area
                 if app.FixYAxisButton.Value
+                    if isempty(app.MaxValY)
+                        FixYAxis(app);
+                    end
                     app.UIAxesPlot.YLim = app.MaxValY;
                 end
                 if ~app.ZoomXButton.Value
@@ -1427,7 +1434,7 @@ classdef sCaSpA < matlab.apps.AppBase
             % First get the image where to run the analysis
             warning('off', 'all');
             togglePointer(app);
-            if nargin==2
+            if nargin>=2
                 tempDIC = varargin{1};
             else
                 tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
@@ -1672,6 +1679,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.LabelPeakButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [136 8 100 22], 'Text', 'Label Peak', 'Enable', 'off');
             app.LabelFeatButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [243 8 100 22], 'Text', 'Label Feat.', 'Enable', 'off');
             app.ExporttraceButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 8 100 22], 'Text', 'Export trace', 'Enable', 'off');
+            app.OtherInteractionPanel = uipanel(app.UIFigure, 'Title', 'Other settings and interactions', 'Position', [1022 25 453 250]);
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
