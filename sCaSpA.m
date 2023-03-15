@@ -144,11 +144,12 @@ classdef sCaSpA < matlab.apps.AppBase
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
         minVer = 0;
         % minor versions - 230228 = 0 -> basic functionality implemented
-        dailyBuilt = 4;
+        dailyBuilt = 5;
         % bug fixes      - 230228 = 1 -> tested workflow in one dataset
         %                - 230302 = 2 -> add aproximate number or cell per FOV
         %                - 230307 = 3 -> add the fix Y axis properties
         %                - 230309 = 4 -> fix detecting ROIs getting the intensity from all the FOVs correct the fix Y axis
+        %                - 230315 = 5 -> bug fix for export data
     end
     
     % Callbacks methods
@@ -385,11 +386,16 @@ classdef sCaSpA < matlab.apps.AppBase
             expT.Properties.VariableNames{8} = 'Fs';
             switch whatExport
                 case 'Analysis'
-                    initialVals = [2:8, 20:105];
+                    initialVals = 2:8;
+                    if numel(expT.Properties.VariableNames) == 105
+                        initialVals = [2:8, 20:105];
+                    end
                     whatToExport = listdlg('ListString', expT.Properties.VariableNames, 'Name', 'Variable selection', 'InitialValue', initialVals);
                     expT = expT(:,whatToExport);
                     [fileName, filePath] = uiputfile('*.csv', 'Export network data');
-                    writetable(expT, fullfile(filePath, fileName));
+                    if ~isempty(filePath)
+                        writetable(expT, fullfile(filePath, fileName));
+                    end
                 case 'Traces'
                     warndlg('Not implemented yet!', 'Not implemented');
 %                     [fileName, filePath] = uiputfile('*.xlsx', 'Export network traces');
@@ -1300,6 +1306,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ButtonPreviousCell.Enable = 'on';
                     app.ShowRawButton.Enable = 'on';
                 case 'Detection'
+                    app.FileMenuExport.Enable = 'on';
                     app.MethodDropDown.Enable = 'on';
                     app.ThresholdEditField.Enable = 'on';
                     app.MinProminanceEditField.Enable = 'on';
