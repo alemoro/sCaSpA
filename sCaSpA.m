@@ -11,7 +11,7 @@ classdef sCaSpA < matlab.apps.AppBase
         FileMenuExport
         FileMenuDebug
         PlotInteractionPanel           matlab.ui.container.Panel
-        ShowRawButton                  matlab.ui.control.Button
+        ShowRawButton                  matlab.ui.control.StateButton
         CellNumberLabel                matlab.ui.control.Label
         ExporttraceButton              matlab.ui.control.Button
         LabelFeatButton                matlab.ui.control.Button
@@ -98,6 +98,9 @@ classdef sCaSpA < matlab.apps.AppBase
         DICCh2                         matlab.ui.control.ToggleButton
         DICCh3                         matlab.ui.control.ToggleButton
         OtherInteractionPanel          matlab.ui.container.Panel
+        LabelROIsButton                matlab.ui.control.StateButton
+        KeepPointButton                matlab.ui.control.Button
+        KeepTraceButton                matlab.ui.control.Button
     end
     
     % File storage properties
@@ -142,14 +145,12 @@ classdef sCaSpA < matlab.apps.AppBase
     properties (Access = private)
         majVer = 1;
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
-        minVer = 0;
+        minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
-        dailyBuilt = 5;
-        % bug fixes      - 230228 = 1 -> tested workflow in one dataset
-        %                - 230302 = 2 -> add aproximate number or cell per FOV
-        %                - 230307 = 3 -> add the fix Y axis properties
-        %                - 230309 = 4 -> fix detecting ROIs getting the intensity from all the FOVs correct the fix Y axis
-        %                - 230315 = 5 -> bug fix for export data
+        %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
+        dailyBuilt = 0;
+        % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
+        
     end
     
     % Callbacks methods
@@ -296,11 +297,20 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                         app.imgT = [app.imgT; networkFiles.imgT];
                     end
+                    % Update based on the version
+                    if ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.1
+                        app.imgT.KeepFOV = true(height(app.imgT),1);
+                        app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                        app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
+                        app.dicT.LabeledROIs = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                        uialert(app.UIFigure, 'The table structure was modified to fit in version 1.1', 'Modified structure');
+                    end
                 end
                 togglePointer(app)
             end
             % Populate tehe DIC dropdown menu and show the first image
             app.currDIC = app.dicT.CellID{1};
+            app.nChannel = size(app.dicT.RawImage{1},3);
             updateDropDownDIC(app);
             % Populate the timelapse dropdown and show the first frame
             updateDropDownTimelapse(app);
@@ -483,6 +493,7 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             ShowTimelapseChanged(app, button)
             updatePlot(app);
+            figure(app.UIFigure);
         end
         
         function ChangeRecordingPressed(app, event)
@@ -503,6 +514,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.currDIC = app.DropDownDIC.Items(tempDIC);
             app.DropDownDIC.Value = app.DropDownDIC.Items(tempDIC);
             updateDropDownTimelapse(app);
+            app.CellNumberEditField.Value = 1;
             updateDIC(app);
             button.Source.Text = 'Show Frame';
             if app.ShowStDevButton.Value
@@ -512,6 +524,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 button.Source.Text = 'Show Movie';
             end
             ShowTimelapseChanged(app, button)
+            figure(app.UIFigure);
         end
         
         function ShowTimelapseChanged(app, event)
@@ -560,6 +573,13 @@ classdef sCaSpA < matlab.apps.AppBase
                 copyobj(app.patchMask, app.UIAxesMovie)
             end
             app.MaxValY = [];
+            % Show if we want to keep the FOV
+            if ~app.imgT.KeepFOV(contains(app.imgT.CellID, app.DropDownTimelapse.Value))
+                app.KeepPointButton.BackgroundColor = app.keepColor(1,:);
+            else
+                app.KeepPointButton.BackgroundColor = app.keepColor(2,:);
+            end
+            figure(app.UIFigure);
         end
         
         function ChangedROI(app)
@@ -616,6 +636,31 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Store the ROI on the image
                 app.patchMask = [app.patchMask; hPatch];
             end
+            % Label the ROIs
+            if app.LabelROIsButton.Value
+                % First gather all the ROIs for the image
+                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                allRois = app.dicT.RoiSet{tempDIC};
+                currRoi = [allRois - app.options.RoiSize allRois + app.options.RoiSize];
+                selRoi = round(event.IntersectionPoint(1:2));
+                fltr = find((currRoi(:,1) < selRoi(1) & currRoi(:,3) > selRoi(1)) & (currRoi(:,2) < selRoi(2) & currRoi(:,4) > selRoi(2)));
+                app.dicT.LabeledROIs{tempDIC}(fltr) = ~app.dicT.LabeledROIs{tempDIC}(fltr);
+                % Show the change
+                app.patchMask(fltr).EdgeColor = app.keepColor(2,:);
+            end
+            if matches(app.PlotTypeButtonGroup.SelectedObject.Text, 'Single Trace')
+                % First gather all the ROIs for the image
+                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                allRois = app.dicT.RoiSet{tempDIC};
+                currRoi = [allRois - app.options.RoiSize allRois + app.options.RoiSize];
+                selRoi = round(event.IntersectionPoint(1:2));
+                fltr = find((currRoi(:,1) < selRoi(1) & currRoi(:,3) > selRoi(1)) & (currRoi(:,2) < selRoi(2) & currRoi(:,4) > selRoi(2)));
+                if ~isempty(fltr)
+                    app.CellNumberEditField.Value = fltr;
+                    updatePlot(app);
+                end
+            end
+            figure(app.UIFigure);
         end
         
         function DetectROIs(app)
@@ -673,6 +718,7 @@ classdef sCaSpA < matlab.apps.AppBase
             modifyROIs(app, 'Modify')
             updatePlot(app);
             toggleInteractions(app, 'Detection');
+            figure(app.UIFigure);
         end
         
         function modifyROIs(app, howTo)
@@ -710,7 +756,11 @@ classdef sCaSpA < matlab.apps.AppBase
                             roiX = allRoi(r,1) + app.options.RoiSize * cos(t);
                             roiY = allRoi(r,2) + app.options.RoiSize * sin(t);
                         end
-                        hPatch(r) = patch(app.UIAxesDIC, roiX, roiY, app.keepColor(1,:), 'EdgeColor', app.keepColor(4,:),'FaceColor', 'none', 'HitTest', 'off');
+                        if app.dicT.LabeledROIs{tempDIC}(r)
+                            hPatch(r) = patch(app.UIAxesDIC, roiX, roiY, app.keepColor(1,:), 'EdgeColor', app.keepColor(1,:),'FaceColor', 'none', 'HitTest', 'off');
+                        else
+                            hPatch(r) = patch(app.UIAxesDIC, roiX, roiY, app.keepColor(1,:), 'EdgeColor', app.keepColor(4,:),'FaceColor', 'none', 'HitTest', 'off');
+                        end
                     end
                     app.patchMask = hPatch';
                     copyobj(app.patchMask, app.UIAxesMovie)
@@ -721,6 +771,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     
             end
             app.bWarnings.SaveFile = true;
+            figure(app.UIFigure);
         end
         
         function detectSpikes(app, event)
@@ -762,7 +813,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 spikeInts = cell(nTraces, 1);
                 spikeLocs = cell(nTraces, 1);
                 spikeWidths = cell(nTraces, 1);
-                spikeRaster = nan(nTraces, nFrames);
+                traceFltr = false(nTraces,1);
                 spikeProm = app.options.PeakMinProminance;
                 spikeDist = app.options.PeakMinDistance / Fs;
                 spikeMinLeng = app.options.PeakMinDuration / Fs;
@@ -781,24 +832,32 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 % Use the find peak to detect the events
                 for trace = 1:nTraces
-                    [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
+                    [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}, peakProm] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
                         'MinPeakHeight', spikeThr(trace), 'MinPeakProminence', spikeProm, 'MinPeakWidth', spikeMinLeng, 'MaxPeakWidth', spikeMaxLeng);
+                    if ~isempty(peakProm)
+                        noise = std(diff(useData(trace,:)));
+                        fltr = peakProm > 2* noise;
+                        traceFltr(trace) = sum(fltr) > 0.5*numel(fltr);
+                    end
                 end
                 % Add the data according to where it needed to be detected
                 if strcmp(app.DetectionButtonGroup.SelectedObject.Text, 'Selected Trace')
                     app.imgT.SpikeLocations{idx}(cellN) = spikeLocs;
                     app.imgT.SpikeIntensities{idx}(cellN) = spikeInts;
                     app.imgT.SpikeWidths{idx}(cellN) = spikeWidths;
+                    app.imgT.KeepROI{idx}(cellN) = traceFltr;
                 else
                     app.imgT.SpikeLocations{idx} = spikeLocs;
                     app.imgT.SpikeIntensities{idx} = spikeInts;
                     app.imgT.SpikeWidths{idx} = spikeWidths;
+                    app.imgT.KeepROI{idx} = traceFltr;
                 end
             end
             close(hWait)
             app.bWarnings.SaveFile = true;
             updatePlot(app);
             toggleInteractions(app, 'Quantification');
+            figure(app.UIFigure);
         end
         
         function DetectClickPlot(app, event)
@@ -846,7 +905,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     end
                     searchArea = max(peakLim1, searchLim(1)):min(peakLim2, searchLim(end));
                     % Find the maxima of this area
-                    [newInt, newLoc, ~, newProm] = findpeaks(tempData(searchArea), 'MinPeakProminence', app.options.PeakMinProminance/2);
+                    [newInt, newLoc, ~, newProm] = findpeaks(tempData(searchArea));
                     [newInt, newFltr] = max(newInt);
                     newLoc = newLoc(newFltr) + searchArea(1) -2;
                     newProm = newProm(newFltr);
@@ -865,7 +924,8 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.tempAddPeak.FWHM = allWidth;
                     end
                 end
-            else
+            end
+            if app.RemovePeakButton.Value
                 % That's more tricky, delete the events
                 allLoc = round(app.imgT.SpikeLocations{imgIdx}{cellN}*Fs);
                 allInt = app.imgT.SpikeIntensities{imgIdx}{cellN};
@@ -896,6 +956,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 
             end
+            figure(app.UIFigure);
         end
         
         function modifyPeaks(app, howTo)
@@ -949,6 +1010,7 @@ classdef sCaSpA < matlab.apps.AppBase
                          updatePlot(app);
                      end
             end
+            figure(app.UIFigure);
         end
         
         function QuantifySpikes(app)
@@ -972,6 +1034,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 [nCell, nFrames] = size(tempData);
                 tempLoc = cellfun(@(x) round(x * Fs), app.imgT.SpikeLocations{idx}, 'UniformOutput', false);
                 tempInt = cell2mat(app.imgT.SpikeIntensities{idx}');
+                % filter out the traces that we wanted to discard
+                traceFltr = app.imgT.KeepROI{idx};
                 qcd = @(x) (quantile(x, .75) - quantile(x, .25)) / (quantile(x, .75) + quantile(x, .25));
                 % Calculate the actual rise and decay (findpeaks only reports the FWHM, not where the start and end are)
                 optRD = struct('UseParallel', true, 'TranNetwork', false, 'UseTrained', false);
@@ -1014,6 +1078,14 @@ classdef sCaSpA < matlab.apps.AppBase
                 rasterDuration(isnan(rasterDuration)) = 0;
                 rasterDuration = sum(rasterDuration);
                 syncPeaks = findpeaks(rasterDuration, Fs);
+                % Check if there is a label for the ROIs
+                if any(cell2mat(app.dicT.LabeledROIs))
+                    bLabel = true;
+                    labelFltr = app.dicT.LabeledROIs{idx};
+                    ISI = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
+                    sp = spikeProperties;
+                    tInt = app.imgT.SpikeIntensities{idx};
+                end
                 % Add the data according to where it needed to be detected
                 app.imgT.SpikeProperties{idx} = spikeProperties;
                 app.imgT.SpikeRaster{idx} = tempRast;
@@ -1035,6 +1107,30 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MeanProminence(idx) = mean(spikeProperties(6,:));
                 app.imgT.MeanTimeToDecay(idx) = mean(spikeProperties(7,:));
                 app.imgT.MeanDecayTau(idx) = mean(spikeProperties(8,:));
+                if bLabel
+                    app.imgT.MeanFrequencyPositive(idx) = mean(cellFreq(labelFltr & cellFreq>0));
+                    app.imgT.MeanFrequencyNegative(idx) = mean(cellFreq(~labelFltr & cellFreq>0));
+                    app.imgT.MeanISIPositive(idx) = mean(cell2mat(ISI(labelFltr)'));
+                    app.imgT.MeanISINegative(idx) = mean(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.MeanTimeToRisePositive(idx) = mean(cell2mat(sp(labelFltr,1)'));
+                    app.imgT.MeanTimeToRiseNegative(idx) = mean(cell2mat(sp(~labelFltr,1)'));
+                    app.imgT.MeanDuration25Positive(idx) = mean(cell2mat(sp(labelFltr,2)'));
+                    app.imgT.MeanDuration25Negative(idx) = mean(cell2mat(sp(~labelFltr,2)'));
+                    app.imgT.MeanDuration50Positive(idx) = mean(cell2mat(sp(labelFltr,3)'));
+                    app.imgT.MeanDuration50Negative(idx) = mean(cell2mat(sp(~labelFltr,3)'));
+                    app.imgT.MeanDuration75Positive(idx) = mean(cell2mat(sp(labelFltr,4)'));
+                    app.imgT.MeanDuration75Negative(idx) = mean(cell2mat(sp(~labelFltr,4)'));
+                    app.imgT.MeanDuration90Positive(idx) = mean(cell2mat(sp(labelFltr,5)'));
+                    app.imgT.MeanDuration90Negative(idx) = mean(cell2mat(sp(~labelFltr,5)'));
+                    app.imgT.MeanIntensityPositive(idx) = mean(cell2mat(tInt(labelFltr)'));
+                    app.imgT.MeanIntensityNegative(idx) = mean(cell2mat(tInt(~labelFltr)'));
+                    app.imgT.MeanProminencePositive(idx) = mean(cell2mat(sp(labelFltr,6)'));
+                    app.imgT.MeanProminenceNegative(idx) = mean(cell2mat(sp(~labelFltr,6)'));
+                    app.imgT.MeanTimeToDecayPositive(idx) = mean(cell2mat(sp(labelFltr,7)'));
+                    app.imgT.MeanTimeToDecayNegative(idx) = mean(cell2mat(sp(~labelFltr,7)'));
+                    app.imgT.MeanDecayTauPositive(idx) = mean(cell2mat(sp(labelFltr,8)'));
+                    app.imgT.MeanDecayTauNegative(idx) = mean(cell2mat(sp(~labelFltr,8)'));
+                end
                 % Add the descriptors: Median
                 app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0));
                 app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval);
@@ -1048,6 +1144,30 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MedianProminence(idx) = median(spikeProperties(6,:));
                 app.imgT.MedianTimeToDecay(idx) = median(spikeProperties(7,:));
                 app.imgT.MedianDecayTau(idx) = median(spikeProperties(8,:));
+                if bLabel
+                    app.imgT.MedianFrequencyPositive(idx) = median(cellFreq(labelFltr & cellFreq>0));
+                    app.imgT.MedianFrequencyNegative(idx) = median(cellFreq(~labelFltr & cellFreq>0));
+                    app.imgT.MedianISIPositive(idx) = median(cell2mat(ISI(labelFltr)'));
+                    app.imgT.MedianISINegative(idx) = median(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.MedianTimeToRisePositive(idx) = median(cell2mat(sp(labelFltr,1)'));
+                    app.imgT.MedianTimeToRiseNegative(idx) = median(cell2mat(sp(~labelFltr,1)'));
+                    app.imgT.MedianDuration25Positive(idx) = median(cell2mat(sp(labelFltr,2)'));
+                    app.imgT.MedianDuration25Negative(idx) = median(cell2mat(sp(~labelFltr,2)'));
+                    app.imgT.MedianDuration50Positive(idx) = median(cell2mat(sp(labelFltr,3)'));
+                    app.imgT.MedianDuration50Negative(idx) = median(cell2mat(sp(~labelFltr,3)'));
+                    app.imgT.MedianDuration75Positive(idx) = median(cell2mat(sp(labelFltr,4)'));
+                    app.imgT.MedianDuration75Negative(idx) = median(cell2mat(sp(~labelFltr,4)'));
+                    app.imgT.MedianDuration90Positive(idx) = median(cell2mat(sp(labelFltr,5)'));
+                    app.imgT.MedianDuration90Negative(idx) = median(cell2mat(sp(~labelFltr,5)'));
+                    app.imgT.MedianIntensityPositive(idx) = median(cell2mat(tInt(labelFltr)'));
+                    app.imgT.MedianIntensityNegative(idx) = median(cell2mat(tInt(~labelFltr)'));
+                    app.imgT.MedianProminencePositive(idx) = median(cell2mat(sp(labelFltr,6)'));
+                    app.imgT.MedianProminenceNegative(idx) = median(cell2mat(sp(~labelFltr,6)'));
+                    app.imgT.MedianTimeToDecayPositive(idx) = median(cell2mat(sp(labelFltr,7)'));
+                    app.imgT.MedianTimeToDecayNegative(idx) = median(cell2mat(sp(~labelFltr,7)'));
+                    app.imgT.MedianDecayTauPositive(idx) = median(cell2mat(sp(labelFltr,8)'));
+                    app.imgT.MedianDecayTauNegative(idx) = median(cell2mat(sp(~labelFltr,8)'));
+                end
                 % Add the descriptors: Coefficient of variation
                 app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0)) / mean(cellFreq(cellFreq>0));
                 app.imgT.CoVInterSpikeInterval(idx) = std(interSpikeInterval) / mean(interSpikeInterval);
@@ -1074,6 +1194,30 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.QCDProminence(idx) = qcd(spikeProperties(6,:));
                 app.imgT.QCDTimeToDecay(idx) = qcd(spikeProperties(7,:));
                 app.imgT.QCDDecayTau(idx) = qcd(spikeProperties(8,:));
+                if bLabel
+                    app.imgT.QCDFrequencyPositive(idx) = qcd(cellFreq(labelFltr & cellFreq>0));
+                    app.imgT.QCDFrequencyNegative(idx) = qcd(cellFreq(~labelFltr & cellFreq>0));
+                    app.imgT.QCDISIPositive(idx) = qcd(cell2mat(ISI(labelFltr)'));
+                    app.imgT.QCDISINegative(idx) = qcd(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.QCDTimeToRisePositive(idx) = qcd(cell2mat(sp(labelFltr,1)'));
+                    app.imgT.QCDTimeToRiseNegative(idx) = qcd(cell2mat(sp(~labelFltr,1)'));
+                    app.imgT.QCDDuration25Positive(idx) = qcd(cell2mat(sp(labelFltr,2)'));
+                    app.imgT.QCDDuration25Negative(idx) = qcd(cell2mat(sp(~labelFltr,2)'));
+                    app.imgT.QCDDuration50Positive(idx) = qcd(cell2mat(sp(labelFltr,3)'));
+                    app.imgT.QCDDuration50Negative(idx) = qcd(cell2mat(sp(~labelFltr,3)'));
+                    app.imgT.QCDDuration75Positive(idx) = qcd(cell2mat(sp(labelFltr,4)'));
+                    app.imgT.QCDDuration75Negative(idx) = qcd(cell2mat(sp(~labelFltr,4)'));
+                    app.imgT.QCDDuration90Positive(idx) = qcd(cell2mat(sp(labelFltr,5)'));
+                    app.imgT.QCDDuration90Negative(idx) = qcd(cell2mat(sp(~labelFltr,5)'));
+                    app.imgT.QCDIntensityPositive(idx) = qcd(cell2mat(tInt(labelFltr)'));
+                    app.imgT.QCDIntensityNegative(idx) = qcd(cell2mat(tInt(~labelFltr)'));
+                    app.imgT.QCDProminencePositive(idx) = qcd(cell2mat(sp(labelFltr,6)'));
+                    app.imgT.QCDProminenceNegative(idx) = qcd(cell2mat(sp(~labelFltr,6)'));
+                    app.imgT.QCDTimeToDecayPositive(idx) = qcd(cell2mat(sp(labelFltr,7)'));
+                    app.imgT.QCDTimeToDecayNegative(idx) = qcd(cell2mat(sp(~labelFltr,7)'));
+                    app.imgT.QCDDecayTauPositive(idx) = qcd(cell2mat(sp(labelFltr,8)'));
+                    app.imgT.QCDDecayTauNegative(idx) = qcd(cell2mat(sp(~labelFltr,8)'));
+                end
                 % Add the descriptors: Variance
                 app.imgT.VarianceFrequency(idx) = var(cellFreq(cellFreq>0));              
                 app.imgT.VarianceInterSpikeInterval(idx) = var(interSpikeInterval);
@@ -1087,6 +1231,30 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.VarianceProminence(idx) = var(spikeProperties(6,:));
                 app.imgT.VarianceTimeToDecay(idx) = var(spikeProperties(7,:));
                 app.imgT.VarianceDecayTau(idx) = var(spikeProperties(8,:));
+                if bLabel
+                    app.imgT.VarianceFrequencyPositive(idx) = var(cellFreq(labelFltr & cellFreq>0));
+                    app.imgT.VarianceFrequencyNegative(idx) = var(cellFreq(~labelFltr & cellFreq>0));
+                    app.imgT.VarianceISIPositive(idx) = var(cell2mat(ISI(labelFltr)'));
+                    app.imgT.VarianceISINegative(idx) = var(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.VarianceTimeToRisePositive(idx) = var(cell2mat(sp(labelFltr,1)'));
+                    app.imgT.VarianceTimeToRiseNegative(idx) = var(cell2mat(sp(~labelFltr,1)'));
+                    app.imgT.VarianceDuration25Positive(idx) = var(cell2mat(sp(labelFltr,2)'));
+                    app.imgT.VarianceDuration25Negative(idx) = var(cell2mat(sp(~labelFltr,2)'));
+                    app.imgT.VarianceDuration50Positive(idx) = var(cell2mat(sp(labelFltr,3)'));
+                    app.imgT.VarianceDuration50Negative(idx) = var(cell2mat(sp(~labelFltr,3)'));
+                    app.imgT.VarianceDuration75Positive(idx) = var(cell2mat(sp(labelFltr,4)'));
+                    app.imgT.VarianceDuration75Negative(idx) = var(cell2mat(sp(~labelFltr,4)'));
+                    app.imgT.VarianceDuration90Positive(idx) = var(cell2mat(sp(labelFltr,5)'));
+                    app.imgT.VarianceDuration90Negative(idx) = var(cell2mat(sp(~labelFltr,5)'));
+                    app.imgT.VarianceIntensityPositive(idx) = var(cell2mat(tInt(labelFltr)'));
+                    app.imgT.VarianceIntensityNegative(idx) = var(cell2mat(tInt(~labelFltr)'));
+                    app.imgT.VarianceProminencePositive(idx) = var(cell2mat(sp(labelFltr,6)'));
+                    app.imgT.VarianceProminenceNegative(idx) = var(cell2mat(sp(~labelFltr,6)'));
+                    app.imgT.VarianceTimeToDecayPositive(idx) = var(cell2mat(sp(labelFltr,7)'));
+                    app.imgT.VarianceTimeToDecayNegative(idx) = var(cell2mat(sp(~labelFltr,7)'));
+                    app.imgT.VarianceDecayTauPositive(idx) = var(cell2mat(sp(labelFltr,8)'));
+                    app.imgT.VarianceDecayTauNegative(idx) = var(cell2mat(sp(~labelFltr,8)'));
+                end
                 % Add the descriptors: Skewness
                 app.imgT.SkewnessFrequency(idx) = skewness(cellFreq(cellFreq>0),0);              
                 app.imgT.SkewnessInterSpikeInterval(idx) = skewness(interSpikeInterval,0);
@@ -1100,6 +1268,30 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.SkewnessProminence(idx) = skewness(spikeProperties(6,:),0);
                 app.imgT.SkewnessTimeToDecay(idx) = skewness(spikeProperties(7,:),0);
                 app.imgT.SkewnessDecayTau(idx) = skewness(spikeProperties(8,:),0);
+                if bLabel
+                    app.imgT.SkewnessFrequencyPositive(idx) = skewness(cellFreq(labelFltr & cellFreq>0));
+                    app.imgT.SkewnessFrequencyNegative(idx) = skewness(cellFreq(~labelFltr & cellFreq>0));
+                    app.imgT.SkewnessISIPositive(idx) = skewness(cell2mat(ISI(labelFltr)'));
+                    app.imgT.SkewnessISINegative(idx) = skewness(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.SkewnessTimeToRisePositive(idx) = skewness(cell2mat(sp(labelFltr,1)'));
+                    app.imgT.SkewnessTimeToRiseNegative(idx) = skewness(cell2mat(sp(~labelFltr,1)'));
+                    app.imgT.SkewnessDuration25Positive(idx) = skewness(cell2mat(sp(labelFltr,2)'));
+                    app.imgT.SkewnessDuration25Negative(idx) = skewness(cell2mat(sp(~labelFltr,2)'));
+                    app.imgT.SkewnessDuration50Positive(idx) = skewness(cell2mat(sp(labelFltr,3)'));
+                    app.imgT.SkewnessDuration50Negative(idx) = skewness(cell2mat(sp(~labelFltr,3)'));
+                    app.imgT.SkewnessDuration75Positive(idx) = skewness(cell2mat(sp(labelFltr,4)'));
+                    app.imgT.SkewnessDuration75Negative(idx) = skewness(cell2mat(sp(~labelFltr,4)'));
+                    app.imgT.SkewnessDuration90Positive(idx) = skewness(cell2mat(sp(labelFltr,5)'));
+                    app.imgT.SkewnessDuration90Negative(idx) = skewness(cell2mat(sp(~labelFltr,5)'));
+                    app.imgT.SkewnessIntensityPositive(idx) = skewness(cell2mat(tInt(labelFltr)'));
+                    app.imgT.SkewnessIntensityNegative(idx) = skewness(cell2mat(tInt(~labelFltr)'));
+                    app.imgT.SkewnessProminencePositive(idx) = skewness(cell2mat(sp(labelFltr,6)'));
+                    app.imgT.SkewnessProminenceNegative(idx) = skewness(cell2mat(sp(~labelFltr,6)'));
+                    app.imgT.SkewnessTimeToDecayPositive(idx) = skewness(cell2mat(sp(labelFltr,7)'));
+                    app.imgT.SkewnessTimeToDecayNegative(idx) = skewness(cell2mat(sp(~labelFltr,7)'));
+                    app.imgT.SkewnessDecayTauPositive(idx) = skewness(cell2mat(sp(labelFltr,8)'));
+                    app.imgT.SkewnessDecayTauNegative(idx) = skewness(cell2mat(sp(~labelFltr,8)'));
+                end
                 % Add the descriptors: Kurtosis
                 app.imgT.KurtosisFrequency(idx) = kurtosis(cellFreq(cellFreq>0),0) - 3;              
                 app.imgT.KurtosisInterSpikeInterval(idx) = kurtosis(interSpikeInterval,0) - 3;
@@ -1113,8 +1305,84 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.KurtosisProminence(idx) = kurtosis(spikeProperties(6,:),0) - 3;
                 app.imgT.KurtosisTimeToDecay(idx) = kurtosis(spikeProperties(7,:),0) - 3;
                 app.imgT.KurtosisDecayTau(idx) = kurtosis(spikeProperties(8,:),0) - 3;
+                if bLabel
+                    app.imgT.KurtosisFrequencyPositive(idx) = kurtosis(cellFreq(labelFltr & cellFreq>0)) -3;
+                    app.imgT.KurtosisFrequencyNegative(idx) = kurtosis(cellFreq(~labelFltr & cellFreq>0)) -3;
+                    app.imgT.KurtosisISIPositive(idx) = kurtosis(cell2mat(ISI(labelFltr)')) -3;
+                    app.imgT.KurtosisISINegative(idx) = kurtosis(cell2mat(ISI(~labelFltr)')) -3;
+                    app.imgT.KurtosisTimeToRisePositive(idx) = kurtosis(cell2mat(sp(labelFltr,1)')) -3;
+                    app.imgT.KurtosisTimeToRiseNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,1)')) -3;
+                    app.imgT.KurtosisDuration25Positive(idx) = kurtosis(cell2mat(sp(labelFltr,2)')) -3;
+                    app.imgT.KurtosisDuration25Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,2)')) -3;
+                    app.imgT.KurtosisDuration50Positive(idx) = kurtosis(cell2mat(sp(labelFltr,3)')) -3;
+                    app.imgT.KurtosisDuration50Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,3)')) -3;
+                    app.imgT.KurtosisDuration75Positive(idx) = kurtosis(cell2mat(sp(labelFltr,4)')) -3;
+                    app.imgT.KurtosisDuration75Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,4)')) -3;
+                    app.imgT.KurtosisDuration90Positive(idx) = kurtosis(cell2mat(sp(labelFltr,5)')) -3;
+                    app.imgT.KurtosisDuration90Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,5)')) -3;
+                    app.imgT.KurtosisIntensityPositive(idx) = kurtosis(cell2mat(tInt(labelFltr)')) -3;
+                    app.imgT.KurtosisIntensityNegative(idx) = kurtosis(cell2mat(tInt(~labelFltr)')) -3;
+                    app.imgT.KurtosisProminencePositive(idx) = kurtosis(cell2mat(sp(labelFltr,6)')) -3;
+                    app.imgT.KurtosisProminenceNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,6)')) -3;
+                    app.imgT.KurtosisTimeToDecayPositive(idx) = kurtosis(cell2mat(sp(labelFltr,7)')) -3;
+                    app.imgT.KurtosisTimeToDecayNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,7)')) -3;
+                    app.imgT.KurtosisDecayTauPositive(idx) = kurtosis(cell2mat(sp(labelFltr,8)')) -3;
+                    app.imgT.KurtosisDecayTauNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,8)')) -3;
+                end
             end
             close(hWait);
+            figure(app.UIFigure);
+        end
+        
+        function labelROIs(app)
+            if app.LabelROIsButton.Value == 1
+            warning('off', 'all');
+            % Get where to detect the events
+            switch app.DetectionButtonGroup.SelectedObject.Text
+                case 'All FOVs'
+                    imgIdx = 1:height(app.imgT);
+                otherwise
+                    imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
+            end
+            % First thing, if there are multiple channels try to label based on the intensity (binary)
+            if app.nChannel > 1
+                useCh = uiconfirm(app.UIFigure, 'Select channel to label the ROIs', 'Label ROIs', 'Options', {'1', '2', '3', 'Cancel'}, 'DefaultOption', 1, 'CancelOption', 4);
+                if ~strcmp(useCh, 'Cancel')
+                    useCh = str2double(useCh);
+                    togglePointer(app);
+                    for idx = imgIdx
+                        imgData = app.dicT.RawImage{idx};
+                        imgData = imgData(:,:,useCh);
+                        tempRoi = app.dicT.RoiSet{idx};
+                        nRoi = size(tempRoi,1);
+                        roiIntensities = zeros(nRoi, 1);
+                        for roi = 1:nRoi
+                            currRoi = [tempRoi(roi,:) - app.options.RoiSize tempRoi(roi,:) + app.options.RoiSize];
+                            % Check the ROI is inside the image
+                            currRoi(1) = max(currRoi(1), 1);
+                            currRoi(2) = max(currRoi(2), 1);
+                            currRoi(3) = min(currRoi(3), size(imgData,1));
+                            currRoi(4) = min(currRoi(4), size(imgData,1));
+                            % For the image to be correct in ImageJ, column 1 = Y column 2 = X, then consider that ImageJ starts at 0
+                            roiIntensities(roi,:) = mean(imgData(currRoi(2):currRoi(4), currRoi(1):currRoi(3), :), [1 2]);
+                        end
+                        thrValues = multithresh(roiIntensities, 2);
+                        labeledRois = roiIntensities > thrValues(2);
+                        % Add the filter to the table (dicT, to not overload the imgT, but it's basically the same)
+                        app.dicT.LabeledROIs{idx} = labeledRois;
+                    end
+                    togglePointer(app);
+                    updateDIC(app);
+                end
+            end
+            % Then (of if there is only one channel) ask the user to manually label the ROIs
+                app.UIFigure.Pointer = 'crosshair';
+            else
+                app.UIFigure.Pointer = 'arrow';
+                updateDIC(app);
+            end
+            app.bWarnings.SaveFile = true;
+            figure(app.UIFigure);
         end
     end
     
@@ -1124,10 +1392,17 @@ classdef sCaSpA < matlab.apps.AppBase
             switch event.NewValue.Text
                 case 'Single Trace'
                     toggleInteractions(app, 'SinglePlot')
+                    imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                    if ~app.imgT.KeepROI{imgID}(app.CellNumberEditField.Value)
+                        app.KeepTraceButton.BackgroundColor = app.keepColor(1,:);
+                    else
+                        app.KeepTraceButton.BackgroundColor = app.keepColor(2,:);
+                    end
                 otherwise
                     toggleInteractions(app, 'MeanPlot')
             end
             updatePlot(app)
+            figure(app.UIFigure);
         end
         
         function changePlotTrace(app, event)
@@ -1138,15 +1413,27 @@ classdef sCaSpA < matlab.apps.AppBase
                 % if + or - were pressed, make sure to stay in the range of available ROIs
                 if strcmp(event.Source.Text, '+')
                     app.CellNumberEditField.Value = min(app.CellNumberEditField.Value + 1, nRoi);
+                    % Show which ROI is selected by increasing the patch size
+                    app.patchMask(app.CellNumberEditField.Value - 1).LineWidth = 0.5;
+                    app.patchMask(app.CellNumberEditField.Value).LineWidth = 1.5;
                 else
                     app.CellNumberEditField.Value = max(app.CellNumberEditField.Value - 1, 1);
+                    % Show which ROI is selected by increasing the patch size
+                    app.patchMask(app.CellNumberEditField.Value + 1).LineWidth = 0.5;
+                    app.patchMask(app.CellNumberEditField.Value).LineWidth = 1.5;
                 end
+                figure(app.UIFigure);
             else
                 % double check that the entered value is between the number of ROIs
                 if app.CellNumberEditField.Value > nRoi
                     warndlg(sprintf('Please, enter a number between 1 and %d', nRoi), 'Index excideed number of ROIs');
                     app.CellNumberEditField.Value = nRoi;
                 end
+            end
+            if ~app.imgT.KeepROI{tempCell}(app.CellNumberEditField.Value)
+                app.KeepTraceButton.BackgroundColor = app.keepColor(1,:);
+            else
+                app.KeepTraceButton.BackgroundColor = app.keepColor(2,:);
             end
             updatePlot(app);
         end
@@ -1166,64 +1453,77 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.UIAxesPlot.YLimMode = 'auto';
                 app.FixYAxisButton.BackgroundColor = [.94 .94 .94];
             end
+            figure(app.UIFigure);
         end
         
-        function updatePlot(app)
-            % simple function for now
+        function updatePlot(app, varargin)
+            axPlot = app.UIAxesPlot;
+            bSpikes = true;
+            if nargin > 1
+                axPlot = varargin{find(strcmpi(varargin, 'Axes'))+1};
+                bSpikes = varargin{find(strcmpi(varargin, 'bSpikes'))+1};
+            end
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
             if ~isempty(app.imgT.DetrendData{tempCell})
                 tempData = app.imgT.DetrendData{tempCell};
                 Fs = app.imgT.ImgProperties(tempCell,4);
                 time = (0:size(tempData, 2)-1) / Fs;
-                cla(app.UIAxesPlot);
+                cla(axPlot);
                 switch app.PlotTypeButtonGroup.SelectedObject.Text
                     case 'All And Mean'
-                        hold(app.UIAxesPlot, 'on')
-                        legend(app.UIAxesPlot, 'off');
-                        % Before plotting anything, try to plot the spikes
-                        hLeg(1) = plot(app.UIAxesPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
-                        plot(app.UIAxesPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
-                        hLeg(2) = plot(app.UIAxesPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
-                        app.UIAxesPlot.XLim = [time(1) time(end)];
-                        if ~isempty(app.imgT.SpikeLocations{tempCell})
+                        hold(axPlot, 'on')
+                        legend(axPlot, 'off');
+                        % Before plotting anything, check if we need to filter trace in or out
+                        if app.ShowRawButton.Value
+                            tempFltr = app.imgT.KeepROI{tempCell};
+                            tempData = tempData(tempFltr,:);
+                        end
+                        hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                        plot(axPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                        hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        axPlot.XLim = [time(1) time(end)];
+                        if ~isempty(app.imgT.SpikeLocations{tempCell}) && bSpikes
                             spikeLoc = app.imgT.SpikeLocations{tempCell};
+                            if app.ShowRawButton.Value
+                                spikeLoc = spikeLoc(tempFltr,:);
+                            end
                             for c = 1:numel(spikeLoc)
                                 tempSpike = spikeLoc{c};
                                 xPatch = [];
                                 xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
                                 xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
-                                yPatch = repmat(repelem(app.UIAxesPlot.YLim,2)', 1, numel(tempSpike));
-                                patch(app.UIAxesPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                                yPatch = repmat(repelem(axPlot.YLim,2)', 1, numel(tempSpike));
+                                patch(axPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
                             end
                         end
-                        legend(app.UIAxesPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
+                        legend(axPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
                     otherwise
                         % plot one trace and the identified spikes
                         cellN = app.CellNumberEditField.Value;
-                        hold(app.UIAxesPlot, 'off')
-                        plot(app.UIAxesPlot, time, tempData(cellN,:), 'Color', 'k', 'HitTest', 'off', 'ButtonDownFcn', '');
-                        legend(app.UIAxesPlot, 'off');
-                        hold(app.UIAxesPlot, 'on')
-                        if ~isempty(app.imgT.SpikeLocations{tempCell})
+                        hold(axPlot, 'off')
+                        plot(axPlot, time, tempData(cellN,:), 'Color', 'k', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        legend(axPlot, 'off');
+                        hold(axPlot, 'on')
+                        if ~isempty(app.imgT.SpikeLocations{tempCell}) && bSpikes
                             spikeLoc = app.imgT.SpikeLocations{tempCell}{cellN};
                             spikeInt = tempData(cellN, round(spikeLoc*Fs)+1);
                             % spikeInt = app.imgT.SpikeIntensities{imgID}{cellN};
-                            plot(app.UIAxesPlot, spikeLoc, spikeInt, 'or', 'HitTest', 'off', 'ButtonDownFcn', '')
+                            plot(axPlot, spikeLoc, spikeInt, 'or', 'HitTest', 'off', 'ButtonDownFcn', '')
                         end
                         % Add the level of the threshold
                         switch app.options.PeakMinHeight
                             case 'MAD'
                                 spikeThr = median(tempData(cellN,:)) + mad(tempData(cellN,:)) * app.options.SigmaThr;
-                                plot(app.UIAxesPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                                plot(axPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
                             case 'Normalized MAD'
                                 spikeThr = median(tempData(cellN,:)) + mad(tempData(cellN,:)) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
-                                plot(app.UIAxesPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                                plot(axPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
                             case 'Rolling StDev'
                                 winSize = (app.options.PeakMaxDuration / Fs) + (app.options.PeakMinDistance / Fs);
                                 tempMean = movmean(tempData(cellN,:), winSize, 2);
                                 tempStDev = std(diff(tempData(cellN,:),[],2),[],2);
                                 spikeThr = tempMean + (app.options.SigmaThr*tempStDev);
-                                plot(app.UIAxesPlot, time, spikeThr, ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
+                                plot(axPlot, time, spikeThr, ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
                         end
                 end
                 % Refine the plot area
@@ -1231,14 +1531,15 @@ classdef sCaSpA < matlab.apps.AppBase
                     if isempty(app.MaxValY)
                         FixYAxis(app);
                     end
-                    app.UIAxesPlot.YLim = app.MaxValY;
+                    axPlot.YLim = app.MaxValY;
                 end
                 if ~app.ZoomXButton.Value
-                    app.MaxStepX = app.UIAxesPlot.XLim(2);
-                    app.ZoomXMin.Value = app.UIAxesPlot.XLim(1);
-                    app.ZoomXMax.Value = app.UIAxesPlot.XLim(2);
+                    app.MaxStepX = axPlot.XLim(2);
+                    app.ZoomXMin.Value = axPlot.XLim(1);
+                    app.ZoomXMax.Value = axPlot.XLim(2);
                 end
             end
+            figure(app.UIFigure);
         end
         
         function ZoomButtonPressed(app, event)
@@ -1250,12 +1551,85 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.UIAxesPlot.XLim = [0 app.MaxStepX];
             end
             figure(app.UIFigure);
+            figure(app.UIFigure);
+        end
+        
+        function showRawPressed(app)
+            updatePlot(app);
+            figure(app.UIFigure);
+        end
+        
+        function ExportTrace(app)
+            hFig = figure('Name', app.DropDownTimelapse.Value);
+            hAx = nexttile;
+            updatePlot(app, 'Axes', hAx, 'bSpikes', true);
+            set(hAx, 'TickDir', 'Out');
+            xlabel('Time (s)');
+            ylabel('\DeltaF/F_0 (a.u.)');
+            if any(matches(app.imgT.Properties.VariableNames, 'SpikeLocations'))
+                hAx = nexttile;
+                updatePlot(app, 'Axes', hAx, 'bSpikes', false);
+                set(hAx, 'TickDir', 'Out');
+                xlabel('Time (s)');
+                ylabel('\DeltaF/F_0 (a.u.)');
+            end
+            if ~any(matches(app.imgT.Properties.VariableNames, 'MeanFrequency'))
+                
+            end
         end
     end
     
     
     % Housekeeping methods
     methods
+        function keyPressed(app, event)
+            switch event.Key
+                case "a" % Add new peaks
+                    if app.AddPeakButton.Enable
+                        evnt.Source.Text = 'Add Peak';
+                        app.AddPeakButton.Value = ~app.AddPeakButton.Value;
+                        crosshairPlot(app, evnt);
+                    end
+                case "r" % Remove peaks
+                    if app.RemovePeakButton.Enable
+                        evnt.Source.Text = 'Remove Peak';
+                        app.RemovePeakButton.Value = ~app.RemovePeakButton.Value;
+                        crosshairPlot(app, evnt);
+                    end
+                case "q" % delete all events
+                    imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                    cellN = app.CellNumberEditField.Value;
+                    Fs = app.imgT.ImgProperties(imgIdx,4);
+                    app.tempRemovePeak = round(app.imgT.SpikeLocations{imgIdx}{cellN}*Fs);
+                    evnt.Source.Text = 'Remove Peak';
+                    app.UIFigure.Pointer = 'crosshair';
+                    app.imgT.KeepROI{imgIdx}(cellN) = false;
+                    crosshairPlot(app, evnt);
+                case "rightarrow" % move to next cell
+                    evnt.Source.Text = '+';
+                    evnt.EventName = 'ButtonPushed';
+                    changePlotTrace(app, evnt);
+                case "leftarrow" % move to previous cell
+                    evnt.Source.Text = '-';
+                    evnt.EventName = 'ButtonPushed';
+                    changePlotTrace(app, evnt);
+                case "uparrow" % move to previous FOV
+                    if numel(app.DropDownDIC.Items) > 1
+                        evnt.Source.Text = '>';
+                        ChangeRecordingPressed(app, evnt)
+                    end
+                case "downarrow" % move to next FOV
+                    if numel(app.DropDownDIC.Items) > 1
+                        evnt.Source.Text = '<';
+                        ChangeRecordingPressed(app, evnt)
+                    end
+                case "p" % place ROI
+                    DicMenuPlaceRoiSelected(app, event)
+                case "d" % Detect peak
+                    detectSpikes(app, []);
+            end
+        end
+        
         function togglePointer(app)
             if strcmp(app.UIFigure.Pointer, 'arrow')
                 app.UIFigure.Pointer = 'watch';
@@ -1305,6 +1679,8 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.CellNumberEditField.Enable = 'on';
                     app.ButtonPreviousCell.Enable = 'on';
                     app.ShowRawButton.Enable = 'on';
+                    app.LabelROIsButton.Enable = 'on';
+                    app.KeepPointButton.Enable = 'on';
                 case 'Detection'
                     app.FileMenuExport.Enable = 'on';
                     app.MethodDropDown.Enable = 'on';
@@ -1323,24 +1699,31 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.DetectButton.Enable = 'on';
                     app.AllAndMeanButton.Enable = 'on';
                     app.SingleTraceButton.Enable = 'on';
+                    app.KeepPointButton.Enable = 'on';
+                    app.LabelROIsButton.Enable = 'on';
+                    app.ExporttraceButton.Enable = 'on';
                 case 'SinglePlot'
                     app.ButtonNextCell.Enable = 'on';
                     app.CellNumberEditField.Enable = 'on';
                     app.ButtonPreviousCell.Enable = 'on';
                     app.AddPeakButton.Enable = 'on';
                     app.RemovePeakButton.Enable = 'on';
+                    app.KeepTraceButton.Enable = 'on';
                 case 'MeanPlot'
                     app.ButtonNextCell.Enable = 'off';
                     app.CellNumberEditField.Enable = 'off';
                     app.ButtonPreviousCell.Enable = 'off';
                     app.AddPeakButton.Enable = 'off';
                     app.RemovePeakButton.Enable = 'off';
+                    app.KeepTraceButton.Enable = 'off';
                 case 'Quantification'
                     app.QuantifyButton.Enable = 'on';
                     app.LabelPeakButton.Enable = 'off';
                     app.LabelFeatButton.Enable = 'off';
                     app.ExporttraceButton.Enable = 'off';
                     app.FileMenuExport.Enable = 'on';
+                    app.ShowRawButton.Enable = 'on';
+                    app.ExporttraceButton.Enable = 'on';
             end
         end
         
@@ -1385,7 +1768,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.patchMask = [];
                 cla(app.UIAxesPlot);
             end
+            % Show if we want to keep the FOV or not
             togglePointer(app)
+            figure(app.UIFigure);
         end
         
         function updateTimelapse(app, imgType, imgShow)
@@ -1405,6 +1790,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
                 case 'Movie'
             end
+            figure(app.UIFigure);
         end
         
         function crosshairDIC(app, event)
@@ -1541,6 +1927,29 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
             end
         end
+        
+        function keepTraceOrPoint(app, event)
+            switch event.Source.Text
+                case 'Keep FOV'
+                    % Simply toggle the logical array and change the color of the button to red
+                    imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                    app.imgT.KeepFOV(imgID) = ~app.imgT.KeepFOV(imgID);
+                    if ~app.imgT.KeepFOV(imgID)
+                        app.KeepPointButton.BackgroundColor = app.keepColor(1,:);
+                    else
+                        app.KeepPointButton.BackgroundColor = app.keepColor(2,:);
+                    end
+                otherwise
+                    imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                    app.imgT.KeepROI{imgID}(app.CellNumberEditField.Value) = ~app.imgT.KeepROI{imgID}(app.CellNumberEditField.Value);
+                    if ~app.imgT.KeepROI{imgID}(app.CellNumberEditField.Value)
+                        app.KeepTraceButton.BackgroundColor = app.keepColor(1,:);
+                    else
+                        app.KeepTraceButton.BackgroundColor = app.keepColor(2,:);
+                    end
+            end
+            figure(app.UIFigure);
+        end
     end
     
     % Component initialization
@@ -1549,7 +1958,8 @@ classdef sCaSpA < matlab.apps.AppBase
             
             % Create UIFigure and hide until all components are created
             app.UIFigure = uifigure('Visible', 'off', 'Position', [100 100 1485 1000], 'Name', sprintf('sCaSpA: Spontaneous Calcium Spikes Analysis %s', app.options.UIVersion),...
-                'WindowScrollWheelFcn', @(~,event)ScrollDetected(app, event));
+                'WindowScrollWheelFcn', @(~,event)ScrollDetected(app, event),...
+                'KeyPressFcn', @(~,event)keyPressed(app, event));
             % Create the file menu
             app.FileMenu = uimenu(app.UIFigure, 'Text', 'File');
             app.FileMenuOpen = uimenu(app.FileMenu, 'Text', 'Load new data',...
@@ -1682,11 +2092,20 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ValueChangedFcn', createCallbackFcn(app, @changePlotTrace, true));
             app.ButtonPreviousCell = uibutton(app.PlotInteractionPanel, 'push', 'Position', [213 40 25 22], 'Text', '-', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @changePlotTrace, true));
-            app.ShowRawButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 40 100 22], 'Text', 'Show raw', 'Enable', 'off');
+            app.ShowRawButton = uibutton(app.PlotInteractionPanel, 'state', 'Position', [348 40 100 22], 'Text', 'Show active', 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @showRawPressed, false));
             app.LabelPeakButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [136 8 100 22], 'Text', 'Label Peak', 'Enable', 'off');
             app.LabelFeatButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [243 8 100 22], 'Text', 'Label Feat.', 'Enable', 'off');
-            app.ExporttraceButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 8 100 22], 'Text', 'Export trace', 'Enable', 'off');
+            app.ExporttraceButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 8 100 22], 'Text', 'Export trace', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @ExportTrace, false));
+            % Create a panel to store orfan interactions
             app.OtherInteractionPanel = uipanel(app.UIFigure, 'Title', 'Other settings and interactions', 'Position', [1022 25 453 250]);
+            app.LabelROIsButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Label ROIs', 'Position', [6 200 100 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @labelROIs, false));
+            app.KeepPointButton = uibutton(app.OtherInteractionPanel, 'push', 'Text', 'Keep FOV', 'Position', [112 200 100 22], 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @keepTraceOrPoint, true));
+            app.KeepTraceButton = uibutton(app.OtherInteractionPanel, 'push', 'Text', 'Keep trace', 'Position', [218 200 100 22], 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @keepTraceOrPoint, true));
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
