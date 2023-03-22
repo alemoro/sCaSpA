@@ -204,6 +204,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempT.RawImage = tempDicImage;
                 tempT.RoiSet = repmat({[]}, size(tempT,1), 1);
                 app.dicT = tempT;
+                app.dicT.LabeledROIs = repmat({[]}, size(tempT,1), 1);
                 % Populate the imgT
                 imgFltr = find(~dicFltr);
                 tempT = cell(numel(imgFltr)+1, 17);
@@ -547,6 +548,8 @@ classdef sCaSpA < matlab.apps.AppBase
                     tempImg = app.imgT.Filename{contains(app.imgT.CellID, app.DropDownTimelapse.Value)};
                     updateTimelapse(app, 'Frame', imread(tempImg))
                 case 'Show StDev'
+                    warning('off', 'all');
+                    hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading', 'Message', 'Loading the movie', 'Indeterminate', 'on');
                     app.ShowFrameButton.BackgroundColor = [.96 .96 .96];
                     app.ShowStDevButton.BackgroundColor = app.keepColor(2,:);
                     app.ShowMovieButton.BackgroundColor = [.96 .96 .96];
@@ -556,23 +559,26 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowFrameButton.Value = 0;
                     app.ShowMovieButton.Value = 0;
                     imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-                    imgStack = loadTiff(app, imgIdx, 1);
+                    imgStack = loadTiff(app.imgT.Filename{imgIdx}, app.imgT.ImgProperties(imgIdx,:), 0);
                     tempImg = std(double(imgStack),[],3);
                     updateTimelapse(app, 'StDev', tempImg)
+                    close(hWait);
+                    warning('on', 'all');
                 case 'Show Movie'
-                    app.ShowFrameButton.BackgroundColor = [.96 .96 .96];
-                    app.ShowStDevButton.BackgroundColor = [.96 .96 .96];
-                    app.ShowMovieButton.BackgroundColor = app.keepColor(2,:);
-                    app.ShowFrameButton.Enable = 'on';
-                    app.ShowStDevButton.Enable = 'on';
-                    app.ShowMovieButton.Enable = 'off';
-                    app.ShowFrameButton.Value = 0;
-                    app.ShowStDevButton.Value = 0;
-                    imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-                    imgStack = loadTiff(app, imgIdx, 1);
-                    tempImg = std(double(imgStack),[],3);
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                    updateTimelapse(app, 'StDev', tempImg)
+                    uialert(app.UIFigure, sprintf('Showing the movie is not yet implemented, sorry.'), 'No movie yet ):');
+%                     app.ShowFrameButton.BackgroundColor = [.96 .96 .96];
+%                     app.ShowStDevButton.BackgroundColor = [.96 .96 .96];
+%                     app.ShowMovieButton.BackgroundColor = app.keepColor(2,:);
+%                     app.ShowFrameButton.Enable = 'on';
+%                     app.ShowStDevButton.Enable = 'on';
+%                     app.ShowMovieButton.Enable = 'off';
+%                     app.ShowFrameButton.Value = 0;
+%                     app.ShowStDevButton.Value = 0;
+%                     imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+%                     imgStack = loadTiff(app.imgT.Filename{imgIdx}, app.imgT.ImgProperties(imgIdx,:), 0);
+%                     tempImg = std(double(imgStack),[],3);
+%                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                     updateTimelapse(app, 'StDev', tempImg)
             end
             if ~isempty(app.patchMask)
                 copyobj(app.patchMask, app.UIAxesMovie)
@@ -614,15 +620,19 @@ classdef sCaSpA < matlab.apps.AppBase
                     % Zoom in
                     zoomPoint = round(event.IntersectionPoint);
                     xMin = max(0, zoomPoint(1) - zoomF);
-                    xMax = min(size(app.dicT.RawImage{1},1), zoomPoint(1) + zoomF);
+                    xMax = min(size(app.dicT.RawImage{1},1), xMin + zoomF*2);
                     yMin = max(0, zoomPoint(2) - zoomF);
-                    yMax = min(size(app.dicT.RawImage{1},1), zoomPoint(2) + zoomF);
+                    yMax = min(size(app.dicT.RawImage{1},1), yMin + zoomF*2);
                     app.UIAxesDIC.XLim = [xMin xMax];
                     app.UIAxesDIC.YLim = [yMin yMax];
+                    app.UIAxesMovie.XLim = [xMin xMax];
+                    app.UIAxesMovie.YLim = [yMin yMax];
                 else
                     % Zoom out
                     app.UIAxesDIC.XLim = [0 size(app.dicT.RawImage{1},1)];
                     app.UIAxesDIC.YLim = [0 size(app.dicT.RawImage{1},1)];
+                    app.UIAxesMovie.XLim = [0 size(app.dicT.RawImage{1},1)];
+                    app.UIAxesMovie.YLim = [0 size(app.dicT.RawImage{1},1)];
                 end
                 app.bZoom = ~app.bZoom;
                 return
@@ -645,6 +655,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     roiY = newRoi(2) + app.options.RoiSize * sin(t);
                 end
                 hPatch = patch(app.UIAxesDIC, roiX, roiY, app.keepColor(1,:), 'FaceColor', 'none', 'HitTest', 'off');
+                patch(app.UIAxesMovie, roiX, roiY, app.keepColor(1,:), 'EdgeColor', app.keepColor(3,:), 'FaceColor', 'none', 'HitTest', 'off');
                 % Check that if there are already stored ROIs and store them
                 tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
                 if ~isempty(app.dicT.RoiSet{tempDIC})
@@ -1443,13 +1454,14 @@ classdef sCaSpA < matlab.apps.AppBase
             % check what we need to plot
             switch imgType
                 case 'Frame'
-                    image(imgShow, 'Parent', app.UIAxesMovie);
+                    image(imgShow, 'Parent', app.UIAxesMovie, 'HitTest', 'off');
                     colormap(app.UIAxesMovie, gray)
                     app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
                     app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
                 case 'StDev'
-                    imshow(imgShow, [min(imgShow,[],'all') max(imgShow,[],'all')], 'Parent', app.UIAxesMovie);
+                    image(imgShow, 'Parent', app.UIAxesMovie, 'CDataMapping', 'scaled', 'HitTest', 'off');
                     colormap(app.UIAxesMovie, hot)
+                    set(app.UIAxesMovie, 'CLim', [0 max(imgShow,[],'all')+10])
                     app.UIAxesMovie.Title = [];
                     app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
                     app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
@@ -1864,6 +1876,7 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             tempExp = app.dicT.ExperimentID{tempDIC};
             tempRoi = app.dicT.RoiSet{tempDIC};
+            app.dicT.LabeledROIs{tempDIC} = true(size(tempRoi,1),1);
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
@@ -1902,6 +1915,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT(imgFltr(i), 'RawIntensity') = {roiIntensities};
                 app.imgT(imgFltr(i), 'FF0Intensity') = {deltaff0Ints};
                 app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
+                app.imgT(imgFltr(i), 'KeepROI') = {true(size(tempRoi,1),1)};
                 loadTime = toc;
             end
             if nargin < 3
@@ -2038,7 +2052,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.DICCh1 = uitogglebutton(app.DICChannels, 'Text', 'Ch1', 'Position', [2 2 50 10]);
             app.DICCh2 = uitogglebutton(app.DICChannels, 'Text', 'Ch2', 'Position', [60 2 50 10]);
             app.DICCh3 = uitogglebutton(app.DICChannels, 'Text', 'Ch3', 'Position', [118 2 50 10]);
-            app.UIAxesMovie = uiaxes(app.UIFigure, 'Position', [517 451 500 500]); title(app.UIAxesMovie, 'Movie title', 'Visible', 'off')
+            app.UIAxesMovie = uiaxes(app.UIFigure, 'Position', [517 451 500 500], 'ButtonDownFcn', createCallbackFcn(app, @DetectClickDIC, true));
+            title(app.UIAxesMovie, 'Movie title', 'Visible', 'off')
             app.UIAxesMovie.Toolbar.Visible = 'off';
             app.SliderMovie = uislider(app.UIFigure, 'MajorTicks', [], 'MinorTicks', [], 'Position', [553 453 460 3], 'Visible', 'off');
             % Create the axis for the plots
