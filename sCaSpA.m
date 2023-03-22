@@ -148,8 +148,9 @@ classdef sCaSpA < matlab.apps.AppBase
         minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 0;
+        dailyBuilt = 1;
         % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
+        %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
         
     end
     
@@ -1088,7 +1089,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 % Add the data according to where it needed to be detected
                 app.imgT.SpikeProperties{idx} = spikeProperties;
-                app.imgT.SpikeRaster{idx} = tempRast;
+                app.imgT.SpikeRaster{idx} = tempRastPeak;
+                app.imgT.FWHMRaster{idx} = tempRast;
                 app.imgT.NetworkRaster{idx} = networkRaster;
                 app.imgT.CellFrequency{idx} = cellFreq;
                 app.imgT.NetworkFrequency(idx) = networkFreq;
@@ -1573,8 +1575,15 @@ classdef sCaSpA < matlab.apps.AppBase
                 xlabel('Time (s)');
                 ylabel('\DeltaF/F_0 (a.u.)');
             end
-            if ~any(matches(app.imgT.Properties.VariableNames, 'MeanFrequency'))
-                
+            if any(matches(app.imgT.Properties.VariableNames, 'SpikeRaster'))
+                % Get the raster plot with the FWHM
+                imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                tempData = app.imgT.FWHMRaster{imgID};
+                hAx = nexttile;
+                rasterPlot(tempData', 'Axes', hAx, 'Area', 'Threshold', 0.8, 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                tempData = app.imgT.SpikeRaster{imgID};
+                hAx = nexttile;
+                rasterPlot(tempData', 'Axes', hAx, 'Area', 'Threshold', 0.8, 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
             end
         end
     end
