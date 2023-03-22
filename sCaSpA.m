@@ -10,6 +10,8 @@ classdef sCaSpA < matlab.apps.AppBase
         FileMenuLabelCondition
         FileMenuExport
         FileMenuDebug
+        HelpMenu
+        HelpMenuShortcuts
         PlotInteractionPanel           matlab.ui.container.Panel
         ShowRawButton                  matlab.ui.control.StateButton
         CellNumberLabel                matlab.ui.control.Label
@@ -148,9 +150,10 @@ classdef sCaSpA < matlab.apps.AppBase
         minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 1;
+        dailyBuilt = 2;
         % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
         %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
+        %                - 230322 = 2 -> Added help for keyboard shortcuts. Code cleaning and general bug fixes
         
     end
     
@@ -203,8 +206,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.dicT = tempT;
                 % Populate the imgT
                 imgFltr = find(~dicFltr);
-                tempT = cell(numel(imgFltr)+1, 15);
-                tempT(1,:) = {'Filename', 'CellID', 'Week', 'CoverslipID', 'RecID', 'Condition', 'ExperimentID', 'ImgProperties', 'ImgByteStrip', 'RawIntensity', 'FF0Intensity', 'DetrendData', 'SpikeLocations', 'SpikeIntensities', 'SpikeWidths'};
+                tempT = cell(numel(imgFltr)+1, 17);
+                tempT(1,:) = {'Filename', 'CellID', 'Week', 'CoverslipID', 'RecID', 'Condition', 'ExperimentID', 'ImgProperties', 'ImgByteStrip', 'RawIntensity', 'FF0Intensity', 'DetrendData', 'KeepFOV', 'KeepROI', 'SpikeLocations', 'SpikeIntensities', 'SpikeWidths'};
                 tempT(2:end,1) = fullfile({imgFiles(imgFltr).folder}, {imgFiles(imgFltr).name});
                 tempT(2:end,2) = cellfun(@(x) x(1:end-4), {imgFiles(imgFltr).name}, 'UniformOutput', false);
                 imgIDs = nameParts(imgFltr);
@@ -299,7 +302,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.imgT = [app.imgT; networkFiles.imgT];
                     end
                     % Update based on the version
-                    if ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.1
+                    if ~isfield(networkFiles, 'options') || ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.1
                         app.imgT.KeepFOV = true(height(app.imgT),1);
                         app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
                         app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
@@ -585,6 +588,19 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function ChangedROI(app)
             app.changeROI = true;
+        end
+        
+        function ShortcutsHelp(app)
+            msg = ["'a' = Add new peaks";...
+                   "'r' = Remove peaks";...
+                   "'q' = Delete all events";...
+                   "'rightarrow' = Move to next cell";...
+                   "'leftarrow' = Move to previous cell";...
+                   "'uparrow' = Move to next FOV";...
+                   "'downarrow' = Move to previous FOV";...
+                   "'p' = Place ROI";...
+                   "'d' = Detect peak"];
+            msgbox(msg, 'Shortcuts list', 'help', 'non-modal');
         end
     end
     
@@ -1390,6 +1406,57 @@ classdef sCaSpA < matlab.apps.AppBase
     
     % Plotting methods
     methods
+        function updateDIC(app)
+            togglePointer(app)
+            cla(app.UIAxesDIC);
+            app.UIAxesDIC.Visible = 'on';
+            % Check which image we need to show
+            whatDIC = contains(app.dicT.CellID, app.currDIC);
+            cellRoi = [];
+            showC = str2double(app.DICChannels.SelectedObject.Text(end));
+            if sum(whatDIC) == 1
+                dicImg = app.dicT.RawImage{whatDIC};
+                image(dicImg(:,:,showC), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
+                colormap(app.UIAxesDIC, gray)
+            else
+                dicFile = app.dicT.Filename(contains(app.dicT.Filename, app.currDIC));
+                dicImg = imread(dicFile{:});
+            end
+            app.UIAxesDIC.XLim = [0 size(dicImg, 1)]; app.UIAxesDIC.XTick = [];
+            app.UIAxesDIC.YLim = [0 size(dicImg, 2)]; app.UIAxesDIC.YTick = [];
+            if ~isempty(app.dicT.RoiSet{whatDIC})
+                modifyROIs(app, 'Modify');
+                updatePlot(app);
+                %cla(app.UIAxesPlot);
+            else
+                app.patchMask = [];
+                cla(app.UIAxesPlot);
+            end
+            % Show if we want to keep the FOV or not
+            togglePointer(app)
+            figure(app.UIFigure);
+        end
+        
+        function updateTimelapse(app, imgType, imgShow)
+            app.UIAxesMovie.Visible = 'on';
+            % check what we need to plot
+            switch imgType
+                case 'Frame'
+                    image(imgShow, 'Parent', app.UIAxesMovie);
+                    colormap(app.UIAxesMovie, gray)
+                    app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
+                    app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
+                case 'StDev'
+                    imshow(imgShow, [min(imgShow,[],'all') max(imgShow,[],'all')], 'Parent', app.UIAxesMovie);
+                    colormap(app.UIAxesMovie, hot)
+                    app.UIAxesMovie.Title = [];
+                    app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
+                    app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
+                case 'Movie'
+            end
+            figure(app.UIFigure);
+        end
+        
         function changePlotType(app, event)
             switch event.NewValue.Text
                 case 'Single Trace'
@@ -1491,11 +1558,13 @@ classdef sCaSpA < matlab.apps.AppBase
                             end
                             for c = 1:numel(spikeLoc)
                                 tempSpike = spikeLoc{c};
-                                xPatch = [];
-                                xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
-                                xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
-                                yPatch = repmat(repelem(axPlot.YLim,2)', 1, numel(tempSpike));
-                                patch(axPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                                if ~isempty(tempSpike)
+                                    xPatch = [];
+                                    xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
+                                    xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
+                                    yPatch = repmat(repelem(axPlot.YLim,2)', 1, numel(tempSpike));
+                                    patch(axPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                                end
                             end
                         end
                         legend(axPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
@@ -1633,7 +1702,9 @@ classdef sCaSpA < matlab.apps.AppBase
                         ChangeRecordingPressed(app, evnt)
                     end
                 case "p" % place ROI
-                    DicMenuPlaceRoiSelected(app, event)
+                    evnt.Source.Text = 'Add ROIs';
+                    app.AddROIsButton.Value = ~app.AddROIsButton.Value;
+                    crosshairDIC(app, evnt);
                 case "d" % Detect peak
                     detectSpikes(app, []);
             end
@@ -1749,57 +1820,6 @@ classdef sCaSpA < matlab.apps.AppBase
             timelapseID = unique(app.imgT{contains(app.imgT.ExperimentID, expID), 'CellID'});
             app.DropDownTimelapse.Items = timelapseID;
             app.DropDownTimelapse.Value = app.DropDownTimelapse.Items(1);
-        end
-        
-        function updateDIC(app)
-            togglePointer(app)
-            cla(app.UIAxesDIC);
-            app.UIAxesDIC.Visible = 'on';
-            % Check which image we need to show
-            whatDIC = contains(app.dicT.CellID, app.currDIC);
-            cellRoi = [];
-            showC = str2double(app.DICChannels.SelectedObject.Text(end));
-            if sum(whatDIC) == 1
-                dicImg = app.dicT.RawImage{whatDIC};
-                image(dicImg(:,:,showC), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
-                colormap(app.UIAxesDIC, gray)
-            else
-                dicFile = app.dicT.Filename(contains(app.dicT.Filename, app.currDIC));
-                dicImg = imread(dicFile{:});
-            end
-            app.UIAxesDIC.XLim = [0 size(dicImg, 1)]; app.UIAxesDIC.XTick = [];
-            app.UIAxesDIC.YLim = [0 size(dicImg, 2)]; app.UIAxesDIC.YTick = [];
-            if ~isempty(app.dicT.RoiSet{whatDIC})
-                modifyROIs(app, 'Modify');
-                updatePlot(app);
-                %cla(app.UIAxesPlot);
-            else
-                app.patchMask = [];
-                cla(app.UIAxesPlot);
-            end
-            % Show if we want to keep the FOV or not
-            togglePointer(app)
-            figure(app.UIFigure);
-        end
-        
-        function updateTimelapse(app, imgType, imgShow)
-            app.UIAxesMovie.Visible = 'on';
-            % check what we need to plot
-            switch imgType
-                case 'Frame'
-                    image(imgShow, 'Parent', app.UIAxesMovie);
-                    colormap(app.UIAxesMovie, gray)
-                    app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
-                    app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
-                case 'StDev'
-                    imshow(imgShow, [min(imgShow,[],'all') max(imgShow,[],'all')], 'Parent', app.UIAxesMovie);
-                    colormap(app.UIAxesMovie, hot)
-                    app.UIAxesMovie.Title = [];
-                    app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
-                    app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
-                case 'Movie'
-            end
-            figure(app.UIFigure);
         end
         
         function crosshairDIC(app, event)
@@ -1984,6 +2004,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 'Enable', 'off');
             app.FileMenuDebug = uimenu(app.FileMenu, 'Text', 'Debug', 'Separator', 'on',...
                 'MenuSelectedFcn', createCallbackFcn(app, @OptionMenuDebugSelected, false));
+            app.HelpMenu = uimenu(app.UIFigure, 'Text', 'Help');
+            app.HelpMenuShortcuts = uimenu(app.HelpMenu, 'Text', 'Shortcuts',...
+                'MenuSelectedFcn', createCallbackFcn(app, @ShortcutsHelp, false));
             % Create image interaction panels
             app.DropDownDIC = uidropdown(app.UIFigure, 'Items', {}, 'Placeholder', 'Recording_ID', 'Position', [15 964 200 22], 'Value',  {}, 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @SelectedDIC, false));
