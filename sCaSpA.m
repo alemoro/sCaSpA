@@ -250,6 +250,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 close(hWait);
                 app.imgT = cell2table(tempT(2:end,:), 'VariableNames', tempT(1,:));
+                app.imgT.KeepFOV = true(height(app.imgT),1);
                 % Populate tehe DIC dropdown menu and show the first image
                 app.currDIC = app.dicT.CellID{1};
                 updateDropDownDIC(app);
