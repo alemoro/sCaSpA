@@ -40,9 +40,9 @@ classdef sCaSpA < matlab.apps.AppBase
         ShowStDevButton                matlab.ui.control.StateButton
         ShowMovieButton                matlab.ui.control.StateButton
         NetworkActivityOptionsPanel    matlab.ui.container.Panel
-        DefaultButton                  matlab.ui.control.Button
-        CancelButton                   matlab.ui.control.Button
-        SaveButton                     matlab.ui.control.Button
+        OpenDataButton                 matlab.ui.control.Button
+        LoadDataButton                 matlab.ui.control.Button
+        SaveDataButton                 matlab.ui.control.Button
         DetrendingOptionsPanel         matlab.ui.container.Panel
         DetrendWindowfrEditField       matlab.ui.control.NumericEditField
         DetrendWindowfrEditFieldLabel  matlab.ui.control.Label
@@ -150,10 +150,11 @@ classdef sCaSpA < matlab.apps.AppBase
         minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 2;
+        dailyBuilt = 3;
         % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
         %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
         %                - 230322 = 2 -> Added help for keyboard shortcuts. Code cleaning and general bug fixes
+        %                - 230327 = 3 -> Automatically save settings, repurpos options buttons. Fixed bug with label ROIs
         
     end
     
@@ -308,7 +309,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.imgT.KeepFOV = true(height(app.imgT),1);
                         app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
                         app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
-                        app.dicT.LabeledROIs = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                        app.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
                         uialert(app.UIFigure, 'The table structure was modified to fit in version 1.1', 'Modified structure');
                     end
                 end
@@ -403,14 +404,16 @@ classdef sCaSpA < matlab.apps.AppBase
             switch whatExport
                 case 'Analysis'
                     initialVals = 2:8;
-                    if numel(expT.Properties.VariableNames) == 105
-                        initialVals = [2:8, 20:105];
+                    if numel(expT.Properties.VariableNames) == 108
+                        initialVals = [2:8, 23:108];
                     end
                     whatToExport = listdlg('ListString', expT.Properties.VariableNames, 'Name', 'Variable selection', 'InitialValue', initialVals);
-                    expT = expT(:,whatToExport);
-                    [fileName, filePath] = uiputfile('*.csv', 'Export network data');
-                    if ~isempty(filePath)
-                        writetable(expT, fullfile(filePath, fileName));
+                    if ~isempty(whatToExport)
+                        expT = expT(:,whatToExport);
+                        [fileName, filePath] = uiputfile('*.csv', 'Export network data');
+                        if isequal(fileName,0) || isequal(filePath,0)
+                            writetable(expT, fullfile(filePath, fileName));
+                        end
                     end
                 case 'Traces'
                     warndlg('Not implemented yet!', 'Not implemented');
@@ -451,7 +454,7 @@ classdef sCaSpA < matlab.apps.AppBase
             end
         end
         
-        function SaveOptions(app)
+        function SaveOptions(app, event)
             app.options.StillCondition = app.StillConditionEditField.Value;
             app.options.Microscope = app.MicroscopeDropDown.Value;
             app.options.Frequency = app.FrequencyEditField.Value;
@@ -472,7 +475,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.options.DetrendSize = app.DetrendWindowfrEditField.Value;
                 detrendData(app);
             end
-            if app.changeROI
+            if contains(event.Source.Parent.Title, 'ROI')
                 modifyROIs(app, 'Modify');
             end
             if ~isempty(app.imgT)
@@ -1108,6 +1111,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 rasterDuration = sum(rasterDuration);
                 syncPeaks = findpeaks(rasterDuration, Fs);
                 % Check if there is a label for the ROIs
+                bLabel = false;
                 if any(cell2mat(app.dicT.LabeledROIs))
                     bLabel = true;
                     labelFltr = app.dicT.LabeledROIs{idx};
@@ -1461,7 +1465,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 case 'StDev'
                     image(imgShow, 'Parent', app.UIAxesMovie, 'CDataMapping', 'scaled', 'HitTest', 'off');
                     colormap(app.UIAxesMovie, hot)
-                    set(app.UIAxesMovie, 'CLim', [0 max(imgShow,[],'all')+10])
+                    set(app.UIAxesMovie, 'CLim', [min(imgShow,[],'all') max(imgShow,[],'all')+10])
                     app.UIAxesMovie.Title = [];
                     app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
                     app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
@@ -1738,10 +1742,10 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.StillConditionEditField.Enable = 'on';
                     app.MicroscopeDropDown.Enable = 'on';
                     app.FrequencyEditField.Enable = 'on';
-                    app.SaveButton.Enable = 'on';
-                    app.CancelButton.Enable = 'on';
-                    app.DefaultButton.Enable = 'on';
+                    app.LoadDataButton.Enable = 'on';
+                    app.OpenDataButton.Enable = 'on';
                 case 'Loaded'
+                    app.SaveDataButton.Enable = 'on';
                     app.DropDownDIC.Enable = 'on';
                     app.ButtonNextRecording.Enable = 'on';
                     app.ButtonPreviousRecording.Enable = 'on';
@@ -1766,6 +1770,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.DICChannels.Visible = 'on';
                     end
                 case 'ROIs'
+                    app.SaveDataButton.Enable = 'on';
                     app.AllAndMeanButton.Enable = 'on';
                     app.SingleTraceButton.Enable = 'on';
                     app.ButtonNextCell.Enable = 'on';
@@ -1775,6 +1780,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.LabelROIsButton.Enable = 'on';
                     app.KeepPointButton.Enable = 'on';
                 case 'Detection'
+                    app.SaveDataButton.Enable = 'on';
                     app.FileMenuExport.Enable = 'on';
                     app.MethodDropDown.Enable = 'on';
                     app.ThresholdEditField.Enable = 'on';
@@ -1796,6 +1802,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.LabelROIsButton.Enable = 'on';
                     app.ExporttraceButton.Enable = 'on';
                 case 'SinglePlot'
+                    app.SaveDataButton.Enable = 'on';
                     app.ButtonNextCell.Enable = 'on';
                     app.CellNumberEditField.Enable = 'on';
                     app.ButtonPreviousCell.Enable = 'on';
@@ -1803,6 +1810,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.RemovePeakButton.Enable = 'on';
                     app.KeepTraceButton.Enable = 'on';
                 case 'MeanPlot'
+                    app.SaveDataButton.Enable = 'on';
                     app.ButtonNextCell.Enable = 'off';
                     app.CellNumberEditField.Enable = 'off';
                     app.ButtonPreviousCell.Enable = 'off';
@@ -1810,6 +1818,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.RemovePeakButton.Enable = 'off';
                     app.KeepTraceButton.Enable = 'off';
                 case 'Quantification'
+                    app.SaveDataButton.Enable = 'on';
                     app.QuantifyButton.Enable = 'on';
                     app.LabelPeakButton.Enable = 'off';
                     app.LabelFeatButton.Enable = 'off';
@@ -1915,7 +1924,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT(imgFltr(i), 'RawIntensity') = {roiIntensities};
                 app.imgT(imgFltr(i), 'FF0Intensity') = {deltaff0Ints};
                 app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
-                app.imgT(imgFltr(i), 'KeepROI') = {true(size(tempRoi,1),1)};
+                app.imgT(imgFltr(i), 'KeepROI') = {false(size(tempRoi,1),1)};
                 loadTime = toc;
             end
             if nargin < 3
@@ -2064,48 +2073,66 @@ classdef sCaSpA < matlab.apps.AppBase
             app.NetworkActivityOptionsPanel = uipanel(app.UIFigure, 'Title', 'Network Activity Options', 'Position', [1022 505 453 423]);
             app.LoadOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'Load Options', 'Position', [8 274 184 123]);
             app.StillConditionEditFieldLabel = uilabel(app.LoadOptionsPanel, 'Position', [7 73 80 22], 'Text', 'Still Condition');
-            app.StillConditionEditField = uieditfield(app.LoadOptionsPanel, 'text', 'Placeholder', app.options.StillCondition, 'Position', [87 73 90 22]);
+            app.StillConditionEditField = uieditfield(app.LoadOptionsPanel, 'text', 'Placeholder', app.options.StillCondition, 'Position', [87 73 90 22],...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.MicroscopeDropDownLabel = uilabel(app.LoadOptionsPanel, 'Position', [7 42 80 22], 'Text', 'Microscope');
-            app.MicroscopeDropDown = uidropdown(app.LoadOptionsPanel, 'Items', {'Nikon A1', 'Nikon Ti2', 'Other'}, 'Position', [87 42 90 22], 'Value',  app.options.Microscope, 'Enable', 'off');
+            app.MicroscopeDropDown = uidropdown(app.LoadOptionsPanel, 'Items', {'Nikon A1', 'Nikon Ti2', 'Other'}, 'Position', [87 42 90 22], 'Value',  app.options.Microscope, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.FrequencyEditFieldLabel = uilabel(app.LoadOptionsPanel, 'Position', [6 11 80 22], 'Text', 'Frequency');
-            app.FrequencyEditField = uieditfield(app.LoadOptionsPanel, 'numeric', 'Position', [87 11 90 22], 'Value', app.options.Frequency, 'Enable', 'off');
+            app.FrequencyEditField = uieditfield(app.LoadOptionsPanel, 'numeric', 'Position', [87 11 90 22], 'Value', app.options.Frequency, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.DetectionOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'Detection Options', 'Position', [203 153 240 244]);
             app.MethodDropDownLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 195 80 22], 'Text', 'Method');
-            app.MethodDropDown = uidropdown(app.DetectionOptionsPanel, 'Items', {'MAD', 'Normalized MAD', 'Rolling St. Dev.'}, 'Position', [142 195 90 22], 'Value',  app.options.PeakMinHeight, 'Enable', 'off');
+            app.MethodDropDown = uidropdown(app.DetectionOptionsPanel, 'Items', {'MAD', 'Normalized MAD', 'Rolling St. Dev.'}, 'Position', [142 195 90 22], 'Value',  app.options.PeakMinHeight, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.ThresholdEditFieldLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 164 80 22], 'Text', 'Threshold');
-            app.ThresholdEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 164 90 22], 'Enable', 'off', 'Value', app.options.SigmaThr);
+            app.ThresholdEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 164 90 22], 'Enable', 'off', 'Value', app.options.SigmaThr,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.MinProminanceEditFieldLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 132 92 22], 'Text', 'Min Prominance');
-            app.MinProminanceEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 132 90 22], 'Enable', 'off', 'Value', app.options.PeakMinProminance);
+            app.MinProminanceEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 132 90 22], 'Enable', 'off', 'Value', app.options.PeakMinProminance,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.MinDistanceframesEditFieldLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 100 123 22], 'Text', 'Min Distance (frames)');
-            app.MinDistanceframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 100 90 22], 'Enable', 'off', 'Value', app.options.PeakMinDistance);
+            app.MinDistanceframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 100 90 22], 'Enable', 'off', 'Value', app.options.PeakMinDistance,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.MinDurationframesEditFieldLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 68 118 22], 'Text', 'Min Duration (frames)');
-            app.MinDurationframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 68 90 22], 'Enable', 'off', 'Value', app.options.PeakMinDuration);
+            app.MinDurationframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 68 90 22], 'Enable', 'off', 'Value', app.options.PeakMinDuration,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.MaxDurationframesEditFieldLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 35 125 22], 'Text', 'Max Duration (frames)');
-            app.MaxDurationframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 35 90 22], 'Enable', 'off', 'Value', app.options.PeakMaxDuration);
+            app.MaxDurationframesEditField = uieditfield(app.DetectionOptionsPanel, 'numeric', 'Position', [142 35 90 22], 'Enable', 'off', 'Value', app.options.PeakMaxDuration,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.TracetouseDropDownLabel = uilabel(app.DetectionOptionsPanel, 'Position', [8 6 80 22], 'Text', 'Trace to use');
-            app.TraceToUseDropDown = uidropdown(app.DetectionOptionsPanel, 'Items', {'Raw', 'Smooth', 'Gradient', ''}, 'Position', [142 6 90 22], 'Value',  app.options.DetectTrace, 'Enable', 'off');
+            app.TraceToUseDropDown = uidropdown(app.DetectionOptionsPanel, 'Items', {'Raw', 'Smooth', 'Gradient', ''}, 'Position', [142 6 90 22], 'Value',  app.options.DetectTrace, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.ROIsOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'ROIs Options', 'Position', [9 153 184 115]);
             app.ROIShapeDropDownLabel = uilabel(app.ROIsOptionsPanel, 'Position', [8 34 80 22], 'Text', 'ROI Shape');
             app.ROIShapeDropDown = uidropdown(app.ROIsOptionsPanel, 'Items', {'Square', 'Circle'}, 'Position', [87 34 90 22], 'Value',  app.options.RoiShape, 'Enable', 'off', ...
-                'ValueChangedFcn', createCallbackFcn(app, @ChangedROI, false));
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.ROISizepxsEditFieldLabel = uilabel(app.ROIsOptionsPanel, 'Position', [8 64 84 22], 'Text', 'ROI Size (pxs)');
             app.ROISizepxsEditField = uieditfield(app.ROIsOptionsPanel, 'numeric', 'Position', [89 64 90 22], 'Value',  app.options.RoiSize, 'Enable', 'off',...
-                'ValueChangedFcn', createCallbackFcn(app, @ChangedROI, false));
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.ROIExpectedEditFieldLabel = uilabel(app.ROIsOptionsPanel, 'Position', [8 4 84 22], 'Text', 'ROIs #');
-            app.ROIExpectedEditField = uieditfield(app.ROIsOptionsPanel, 'numeric', 'Position', [89 4 90 22], 'Value',  app.options.ExpectedRoi, 'Enable', 'off');
+            app.ROIExpectedEditField = uieditfield(app.ROIsOptionsPanel, 'numeric', 'Position', [89 4 90 22], 'Value',  app.options.ExpectedRoi, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.RegistrationOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'Registration Options', 'Position', [10 40 184 104]);
-            app.RegistrationCheckBox = uicheckbox(app.RegistrationOptionsPanel, 'Text', 'Registration', 'Position', [9 54 86 22], 'Enable', 'off', 'Value', app.options.Registration);
+            app.RegistrationCheckBox = uicheckbox(app.RegistrationOptionsPanel, 'Text', 'Registration', 'Position', [9 54 86 22], 'Enable', 'off', 'Value', app.options.Registration,...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.ReferenceConditionLabel = uilabel(app.RegistrationOptionsPanel, 'Position', [8 29 118 22], 'Text', 'Reference Condition:');
-            app.ReferenceConditionEditField = uieditfield(app.RegistrationOptionsPanel, 'text', 'Value', app.options.Reference, 'Position', [9 8 118 22], 'Enable', 'off');
+            app.ReferenceConditionEditField = uieditfield(app.RegistrationOptionsPanel, 'text', 'Value', app.options.Reference, 'Position', [9 8 118 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.DetrendingOptionsPanel = uipanel(app.NetworkActivityOptionsPanel, 'Title', 'Detrending Options', 'Position', [204 40 239 104]);
             app.DetrendingMethodDropDownLabel = uilabel(app.DetrendingOptionsPanel, 'Position', [8 53 108 22], 'Text', 'Detrending Method');
-            app.DetrendingMethodDropDown = uidropdown(app.DetrendingOptionsPanel, 'Items', {'None', 'Mov Median', 'Mov Mean', 'Gaussian'}, 'Position', [138 53 90 22], 'Value', app.options.Detrending, 'Enable', 'off');
+            app.DetrendingMethodDropDown = uidropdown(app.DetrendingOptionsPanel, 'Items', {'None', 'Mov Median', 'Mov Mean', 'Gaussian'}, 'Position', [138 53 90 22], 'Value', app.options.Detrending, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.DetrendWindowfrEditFieldLabel = uilabel(app.DetrendingOptionsPanel, 'Position', [8 25 113 22], 'Text', 'Detrend Window (fr)');
-            app.DetrendWindowfrEditField = uieditfield(app.DetrendingOptionsPanel, 'numeric', 'Position', [138 25 90 22], 'Value',  app.options.DetrendSize, 'Enable', 'off');
-            app.SaveButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [65 8 100 22], 'Text', 'Save', 'Enable', 'off',...
-                'ButtonPushedFcn', createCallbackFcn(app, @SaveOptions, false));
-            app.CancelButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [175 8 100 22], 'Text', 'Cancel', 'Enable', 'off');
-            app.DefaultButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [285 8 100 22], 'Text', 'Default', 'Enable', 'off');
+            app.DetrendWindowfrEditField = uieditfield(app.DetrendingOptionsPanel, 'numeric', 'Position', [138 25 90 22], 'Value',  app.options.DetrendSize, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
+            % Useful buttons
+            app.LoadDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [65 8 100 22], 'Text', 'Load new', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @FileMenuOpenSelected, false));
+            app.OpenDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [175 8 100 22], 'Text', 'Open data', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @FileMenuLoadSelected, false));
+            app.SaveDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [285 8 100 22], 'Text', 'Save', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @FileMenuSaveSelected, false));
             % Create Spike Detection Panel
             app.SpikeDetectionPanel = uipanel(app.UIFigure, 'Title', 'Spike Detection', 'Position', [1022 411 453 83]);
             app.DetectionButtonGroup = uibuttongroup(app.SpikeDetectionPanel, 'Position', [6 6 207 53]);
