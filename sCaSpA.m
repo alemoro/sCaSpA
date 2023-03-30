@@ -103,6 +103,12 @@ classdef sCaSpA < matlab.apps.AppBase
         LabelROIsButton                matlab.ui.control.StateButton
         KeepPointButton                matlab.ui.control.Button
         KeepTraceButton                matlab.ui.control.Button
+        NetworkThresholdLabel
+        NetworkThresholdLabelEditField
+        NetworkLevelDropDownLabel
+        NetworkLevelDropDown
+        SynchLevelDropDownLabel
+        SynchLevelDropDown
     end
     
     % File storage properties
@@ -150,12 +156,13 @@ classdef sCaSpA < matlab.apps.AppBase
         minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 4;
+        dailyBuilt = 5;
         % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
         %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
         %                - 230322 = 2 -> Added help for keyboard shortcuts. Code cleaning and general bug fixes
         %                - 230327 = 3 -> Automatically save settings, repurpos options buttons. Fixed bug with label ROIs
         %                - 230328 = 4 -> Important update on spike quantification, please update the FGA_Toolbox as well
+        %                - 230330 = 5 -> Added user input for network quantification
         
     end
     
@@ -399,7 +406,7 @@ classdef sCaSpA < matlab.apps.AppBase
         function FileMenuExportSelected(app)
             % Ask what needs to be saved
             whatExport = questdlg('What would you like to export?', 'Export as csv', 'Analysis', 'Traces', 'Both', 'Analysis');
-            expT = app.imgT;
+            expT = app.imgT(app.imgT.KeepFOV,:);
             expT.ImgProperties = expT.ImgProperties(:,4);
             expT.Properties.VariableNames{8} = 'Fs';
             switch whatExport
@@ -412,8 +419,10 @@ classdef sCaSpA < matlab.apps.AppBase
                     if ~isempty(whatToExport)
                         expT = expT(:,whatToExport);
                         [fileName, filePath] = uiputfile('*.csv', 'Export network data');
-                        if isequal(fileName,0) || isequal(filePath,0)
+                        if ~isequal(fileName,0) || ~isequal(filePath,0)
+                            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Export', 'Message', 'Exporting data, please wait', 'Indeterminate', 'on');
                             writetable(expT, fullfile(filePath, fileName));
+                            close(hWait);
                         end
                     end
                 case 'Traces'
@@ -1072,8 +1081,30 @@ classdef sCaSpA < matlab.apps.AppBase
             hWait = uiprogressdlg(app.UIFigure, 'Title', 'Quantifying spikes', 'Message', 'Quantifying spikes in cell: ', 'Indeterminate', 'on');
             for idx = imgIdx'
                 hWait.Message = sprintf('Quantifying spikes in FOV: %d', idx);
-                basedRaster = 3;
-                basedPeak = 4;
+                switch app.NetworkLevelDropDown.Value
+                    case 'Baseline'
+                        basedRaster = 1;
+                    case '25%'
+                        basedRaster = 2;
+                    case '50%'
+                        basedRaster = 3;
+                    case '75%'
+                        basedRaster = 4;
+                    case '90%'
+                        basedRaster = 5;
+                end
+                switch app.SynchLevelDropDown.Value
+                    case 'Baseline'
+                        basedPeak = 1;
+                    case '25%'
+                        basedPeak = 2;
+                    case '50%'
+                        basedPeak = 3;
+                    case '75%'
+                        basedPeak = 4;
+                    case '90%'
+                        basedPeak = 5;
+                end
                 % Gather the important data
                 Fs = app.imgT.ImgProperties(idx,4);
                 tempData = app.imgT.DetrendData{idx};
@@ -1115,15 +1146,16 @@ classdef sCaSpA < matlab.apps.AppBase
                 smoothWindow = smoothWindow / sum(smoothWindow);
                 networkRaster = filter(smoothWindow, 1, networkRaster);
                 % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
-                networkPeaks = findpeaks(networkRaster, Fs, 'MinPeakProminence', 1.5);
-                netThreshold = floor(sum(cellFreq>0) * 0.8);
+                networkPeaks = findpeaks(networkRaster, Fs, 'MinPeakProminence', 2.5);
+                netThreshold = floor(sum(cellFreq>0) * (app.NetworkThresholdLabelEditField.Value / 100));
                 networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
                 % Calculate the average synchronicity (based on the 90% duration)
                 rasterDuration = tempRastPeak;
                 rasterDuration(~isnan(rasterDuration)) = 1;
                 rasterDuration(isnan(rasterDuration)) = 0;
                 rasterDuration = sum(rasterDuration);
-                syncPeaks = findpeaks(rasterDuration, Fs);
+                rasterDuration = filter(smoothWindow, 1, rasterDuration);
+                syncPeaks = findpeaks(rasterDuration, Fs, 'MinPeakProminence', 2.5);
                 % Check if there is a label for the ROIs
                 bLabel = false;
                 if any(cell2mat(app.dicT.LabeledROIs))
@@ -1145,7 +1177,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Add the descriptors: Mean
                 app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0), 'omitnan');
                 app.imgT.MeanInterSpikeInterval(idx) = mean(interSpikeInterval, 'omitnan');
-                app.imgT.MeanSynchronicity(idx) = mean(syncPeaks, 'omitnan') / sum(cellFreq>0) * 100;
+                app.imgT.MeanSynchronicity(idx) = mean(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
                 app.imgT.MeanTimeToRise(idx) = mean(spikeProperties(1,:), 'omitnan');
                 app.imgT.MeanDuration25(idx) = mean(spikeProperties(2,:), 'omitnan');
                 app.imgT.MeanDuration50(idx) = mean(spikeProperties(3,:), 'omitnan');
@@ -1182,7 +1214,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Add the descriptors: Median
                 app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0), 'omitnan');
                 app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval, 'omitnan');
-                app.imgT.MedianSynchronicity(idx) = median(syncPeaks, 'omitnan') / sum(cellFreq>0) * 100;
+                app.imgT.MedianSynchronicity(idx) = median(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
                 app.imgT.MedianTimeToRise(idx) = median(spikeProperties(1,:), 'omitnan');
                 app.imgT.MedianDuration25(idx) = median(spikeProperties(2,:), 'omitnan');
                 app.imgT.MedianDuration50(idx) = median(spikeProperties(3,:), 'omitnan');
@@ -1604,7 +1636,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         cellN = app.CellNumberEditField.Value;
                         hold(axPlot, 'off')
                         legend(axPlot, 'off');
-                        if ~isempty(app.imgT.SpikeProperties{tempCell}{cellN}) && bSpikes
+                        if any(contains(app.imgT.Properties.VariableNames, 'SpikeProperties')) && bSpikes
                             % Get the start and ends of the events
                             evStart = app.imgT.SpikeProperties{tempCell}{cellN,9}(2,:);
                             evEnd = app.imgT.SpikeProperties{tempCell}{cellN,10}(2,:);
@@ -1699,10 +1731,10 @@ classdef sCaSpA < matlab.apps.AppBase
                 imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
                 tempData = app.imgT.FWHMRaster{imgID};
                 hAx = nexttile;
-                rasterPlot(tempData', 'Axes', hAx, 'Area', 'Threshold', 0.8, 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
                 tempData = app.imgT.SpikeRaster{imgID};
                 hAx = nexttile;
-                rasterPlot(tempData', 'Axes', hAx, 'Area', 'Threshold', 0.8, 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
             end
         end
     end
@@ -2214,6 +2246,12 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ButtonPushedFcn', createCallbackFcn(app, @keepTraceOrPoint, true));
             app.KeepTraceButton = uibutton(app.OtherInteractionPanel, 'push', 'Text', 'Keep trace', 'Position', [218 200 100 22], 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @keepTraceOrPoint, true));
+            app.NetworkThresholdLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 169 100 22], 'Text', 'Network %');
+            app.NetworkThresholdLabelEditField = uieditfield(app.OtherInteractionPanel, 'numeric', 'Position', [112 169 100 22], 'Enable', 'on', 'Value', 80);
+            app.NetworkLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [218 169 100 22], 'Text', 'Network level');
+            app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [324 169 100 22], 'Value', '25%');
+            app.SynchLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [218 138 100 22], 'Text', 'Synch level');
+            app.SynchLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [324 138 100 22], 'Value', '90%');
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
