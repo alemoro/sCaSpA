@@ -156,13 +156,14 @@ classdef sCaSpA < matlab.apps.AppBase
         minVer = 1;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 5;
+        dailyBuilt = 6;
         % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
         %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
         %                - 230322 = 2 -> Added help for keyboard shortcuts. Code cleaning and general bug fixes
         %                - 230327 = 3 -> Automatically save settings, repurpos options buttons. Fixed bug with label ROIs
         %                - 230328 = 4 -> Important update on spike quantification, please update the FGA_Toolbox as well
         %                - 230330 = 5 -> Added user input for network quantification
+        %                - 230330 = 6 -> Fixed bug with label ROIs
         
     end
     
@@ -570,7 +571,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowStDevButton.Value = 0;
                     app.ShowMovieButton.Value = 0;
                     tempImg = app.imgT.Filename{contains(app.imgT.CellID, app.DropDownTimelapse.Value)};
-                    updateTimelapse(app, 'Frame', imread(tempImg))
+                    if exist(tempImg, 'file')
+                        updateTimelapse(app, 'Frame', imread(tempImg))
+                    end
                 case 'Show StDev'
                     warning('off', 'all');
                     hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading', 'Message', 'Loading the movie', 'Indeterminate', 'on');
@@ -630,7 +633,8 @@ classdef sCaSpA < matlab.apps.AppBase
                    "'uparrow' = Move to next FOV";...
                    "'downarrow' = Move to previous FOV";...
                    "'p' = Place ROI";...
-                   "'d' = Detect peak"];
+                   "'d' = Detect peak";...
+                   "'l' = Label ROIs"];
             msgbox(msg, 'Shortcuts list', 'help', 'non-modal');
         end
     end
@@ -1416,17 +1420,19 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function labelROIs(app)
             if app.LabelROIsButton.Value == 1
-            warning('off', 'all');
-            % Get where to detect the events
-            switch app.DetectionButtonGroup.SelectedObject.Text
-                case 'All FOVs'
-                    imgIdx = 1:height(app.imgT);
-                otherwise
-                    imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
-            end
-            % First thing, if there are multiple channels try to label based on the intensity (binary)
-            if app.nChannel > 1
-                useCh = uiconfirm(app.UIFigure, 'Select channel to label the ROIs', 'Label ROIs', 'Options', {'1', '2', '3', 'Cancel'}, 'DefaultOption', 1, 'CancelOption', 4);
+                warning('off', 'all');
+                % Get where to detect the events
+                switch app.DetectionButtonGroup.SelectedObject.Text
+                    case 'All FOVs'
+                        imgIdx = 1:height(app.imgT);
+                        if app.nChannel > 1
+                            useCh = uiconfirm(app.UIFigure, 'Select channel to label the ROIs', 'Label ROIs', 'Options', {'1', '2', '3', 'Cancel'}, 'DefaultOption', 1, 'CancelOption', 4);
+                        end
+                    otherwise
+                        imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
+                        useCh = '1';
+                end
+                % First thing, if there are multiple channels try to label based on the intensity (binary)
                 if ~strcmp(useCh, 'Cancel')
                     useCh = str2double(useCh);
                     togglePointer(app);
@@ -1454,8 +1460,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     togglePointer(app);
                     updateDIC(app);
                 end
-            end
-            % Then (of if there is only one channel) ask the user to manually label the ROIs
+                % Then (of if there is only one channel) ask the user to manually label the ROIs
                 app.UIFigure.Pointer = 'crosshair';
             else
                 app.UIFigure.Pointer = 'arrow';
@@ -1731,10 +1736,18 @@ classdef sCaSpA < matlab.apps.AppBase
                 imgID = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
                 tempData = app.imgT.FWHMRaster{imgID};
                 hAx = nexttile;
-                rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                if any(cell2mat(app.dicT.LabeledROIs))
+                    rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #', 'MultipleROIs', app.dicT.LabeledROIs{contains(app.dicT.CellID, app.DropDownDIC.Value)});
+                else
+                    rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                end
                 tempData = app.imgT.SpikeRaster{imgID};
                 hAx = nexttile;
-                rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                if any(cell2mat(app.dicT.LabeledROIs))
+                    rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #', 'MultipleROIs', app.dicT.LabeledROIs{contains(app.dicT.CellID, app.DropDownDIC.Value)});
+                else
+                    rasterPlot(tempData', 'VarX', (1:length(tempData))/app.imgT.ImgProperties(imgID,4), 'Axes', hAx, 'Area', 'Threshold', (app.NetworkThresholdLabelEditField.Value / 100), 'xLabel', 'Time (s)', 'yLabel', 'Cell #');
+                end
             end
         end
     end
@@ -1789,6 +1802,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     crosshairDIC(app, evnt);
                 case "d" % Detect peak
                     detectSpikes(app, []);
+                case "l"
+                    app.LabelROIsButton.Value = ~app.LabelROIsButton.Value;
+                    labelROIs(app)
             end
         end
         
@@ -1950,7 +1966,7 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             tempExp = app.dicT.ExperimentID{tempDIC};
             tempRoi = app.dicT.RoiSet{tempDIC};
-            app.dicT.LabeledROIs{tempDIC} = true(size(tempRoi,1),1);
+            app.dicT.LabeledROIs{tempDIC} = false(size(tempRoi,1),1);
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
