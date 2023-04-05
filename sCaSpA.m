@@ -43,6 +43,7 @@ classdef sCaSpA < matlab.apps.AppBase
         OpenDataButton                 matlab.ui.control.Button
         LoadDataButton                 matlab.ui.control.Button
         SaveDataButton                 matlab.ui.control.Button
+        CleanDataButton                matlab.ui.control.Button
         DetrendingOptionsPanel         matlab.ui.container.Panel
         DetrendWindowfrEditField       matlab.ui.control.NumericEditField
         DetrendWindowfrEditFieldLabel  matlab.ui.control.Label
@@ -64,9 +65,9 @@ classdef sCaSpA < matlab.apps.AppBase
         TracetouseDropDownLabel        matlab.ui.control.Label
         MaxDurationframesEditField     matlab.ui.control.NumericEditField
         MaxDurationframesEditFieldLabel  matlab.ui.control.Label
-        MinDurationframesEditField     matlab.ui.control.NumericEditField
+        MinDurationframesEditField       matlab.ui.control.NumericEditField
         MinDurationframesEditFieldLabel  matlab.ui.control.Label
-        MinDistanceframesEditField     matlab.ui.control.NumericEditField
+        MinDistanceframesEditField       matlab.ui.control.NumericEditField
         MinDistanceframesEditFieldLabel  matlab.ui.control.Label
         MinProminanceEditField         matlab.ui.control.NumericEditField
         MinProminanceEditFieldLabel    matlab.ui.control.Label
@@ -109,6 +110,8 @@ classdef sCaSpA < matlab.apps.AppBase
         NetworkLevelDropDown
         SynchLevelDropDownLabel
         SynchLevelDropDown
+        DICZoomLabel
+        DICZoomEditField
     end
     
     % File storage properties
@@ -140,6 +143,8 @@ classdef sCaSpA < matlab.apps.AppBase
         ZoomStepX
         MaxStepX
         MaxValY % Maximum Y value for the FOV
+        isBioFormat
+        imgType = 8; % Store if the image is 8-bit or 16-bit
         bWarnings = struct('AddEvents', true,...
                            'RemoveEvents', true,...
                            'SaveFile', false);
@@ -153,17 +158,12 @@ classdef sCaSpA < matlab.apps.AppBase
     properties (Access = private)
         majVer = 1;
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
-        minVer = 1;
+        minVer = 2;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
-        dailyBuilt = 6;
-        % bug fixes      - 230320 = 0 -> Several bug fixes and added keyboard shortcuts
-        %                - 230321 = 1 -> Fixed raster plot (requires FGA_Toolbox update)
-        %                - 230322 = 2 -> Added help for keyboard shortcuts. Code cleaning and general bug fixes
-        %                - 230327 = 3 -> Automatically save settings, repurpos options buttons. Fixed bug with label ROIs
-        %                - 230328 = 4 -> Important update on spike quantification, please update the FGA_Toolbox as well
-        %                - 230330 = 5 -> Added user input for network quantification
-        %                - 230330 = 6 -> Fixed bug with label ROIs
+        %                - 230405 = 2 -> Implemented loading *.nd2 files
+        dailyBuilt = 0;
+        % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
         
     end
     
@@ -184,7 +184,14 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.options.LastPath = imgPath;
                 % Load the data starting from the DIC/BF/Still image
                 hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading images data');
-                imgFiles = dir(fullfile(imgPath, '*.tif'));
+                % See if we need to open an nd2 file or not
+                if strcmp(app.options.Microscope, 'Nikon Ti2')
+                    imgFiles = dir(fullfile(imgPath, '*.nd2'));
+                    app.isBioFormat = true;
+                else
+                    imgFiles = dir(fullfile(imgPath, '*.tif'));
+                    app.isBioFormat = false;
+                end
                 % Populate the DIC table
                 dicFltr = contains({imgFiles.name}, app.options.StillCondition)';
                 nameParts = regexp({imgFiles.name}, '_', 'split')';
@@ -197,19 +204,46 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempT.CellID = cellfun(@(x) x(1:end-4), {imgFiles(dicFltr).name}', 'UniformOutput', false);
                 expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{3}), nameParts, 'UniformOutput', false);
                 tempT.ExperimentID = expIDs(dicFltr);
-                % Check if it is a multichannel image and prepare the containing array
-                dicInfo = imfinfo(tempT.Filename{1});
-                app.nChannel = numel(dicInfo);
-                dicWidth = dicInfo(1).Width;
-                dicHeight = dicInfo(1).Height;
-                tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, 'uint8')}, height(tempT), 1);
-                for i = 1:size(tempT,1)
-                    hWait.Value = i/sum(dicFltr);
-                    hWait.Message = sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100);
-                    dicFile = tempT.Filename{i};
-                    for c = 1:app.nChannel                   
-                        tempDicImage{i,1}(:,:,c) = imread(dicFile,c);
-                    end
+                switch app.options.Microscope
+                    case {'Nikon A1' 'Nikon Ti2'}
+                        try
+                            dicInfo = bfGetReader(tempT.Filename{1});
+                            dicInfo = dicInfo.getMetadataStore();
+                            dicWidth = dicInfo.getPixelsSizeX(0).getValue();
+                            dicHeight = dicInfo.getPixelsSizeY(0).getValue();
+                            app.nChannel = dicInfo.getChannelCount(0);
+                            pxType = char(dicInfo.getPixelsType(0).getValue());
+                            app.imgType = str2double(regexprep(pxType,'uint',''));
+                            tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, pxType)}, height(tempT), 1);
+                            for i = 1:size(tempT,1)
+                                hWait.Value = i/sum(dicFltr);
+                                hWait.Message = sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100);
+                                bfData = bfopen(tempT.Filename{i});
+                                % The data can have multiple channel, but only one series
+                                bfImages = bfData{1, 1};
+                                for c=1:app.nChannel
+                                    tempDicImage{i,1}(:,:,c) = bfImages{c,1};
+                                end
+                            end
+                        catch
+                            close(hWait);
+                            uialert(app.UIFigure, {'BioFormat plugins are not installed.';'';'Please refer to:';'';'https://docs.openmicroscopy.org/bio-formats/6.1.0/users/matlab/index.html'}, 'No BioFormat');
+                        end
+                    otherwise
+                        % Check if it is a multichannel image and prepare the containing array
+                        dicInfo = imfinfo(tempT.Filename{1});
+                        app.nChannel = numel(dicInfo);
+                        dicWidth = dicInfo(1).Width;
+                        dicHeight = dicInfo(1).Height;
+                        tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, 'uint8')}, height(tempT), 1);
+                        for i = 1:size(tempT,1)
+                            hWait.Value = i/sum(dicFltr);
+                            hWait.Message = sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100);
+                            dicFile = tempT.Filename{i};
+                            for c = 1:app.nChannel
+                                tempDicImage{i,1}(:,:,c) = imread(dicFile,c);
+                            end
+                        end
                 end
                 tempT.RawImage = tempDicImage;
                 tempT.RoiSet = repmat({[]}, size(tempT,1), 1);
@@ -235,29 +269,34 @@ classdef sCaSpA < matlab.apps.AppBase
                     tempT{i+1,6} = imgIDs{i}{2};
                     tempT{i+1,7} = [imgIDs{i}{1} '_' imgIDs{i}{3}]; % use to link the DIC to the movies
                     % get the imaging period (T) and frequency (Fs) from the file
-                    imgInfo = imfinfo(fullfile(imgFiles(imgFltr(i)).folder, imgFiles(imgFltr(i)).name));
                     switch app.options.Microscope
                         case {'Nikon A1' 'Nikon Ti2'}
-                            T = imgInfo(1).ImageDescription;
-                            T = regexp(T, '=', 'split');
-                            T = sscanf(T{6}, '%f');
-                            if isinf(T)
-                                T = 1/(app.options.Frequency);
-                            end
-                        case 'Other'
+                            imgInfo = bfGetReader(fullfile(imgFiles(imgFltr(i)).folder, imgFiles(imgFltr(i)).name));
+                            imgInfo = imgInfo.getMetadataStore();
+                            imgWidth = imgInfo.getPixelsSizeX(0).getValue();
+                            imgHeight = imgInfo.getPixelsSizeY(0).getValue();
+                            nPlanes = imgInfo.getPlaneCount(0);
+                            T = double(imgInfo.getPlaneExposureTime(0,0).value());
+                            % For BioFormat we don't need information on the Endian, use the ImgByteStrip for saying that we have a bioformat file
+                            tempT{i+1,9} = 'BioFormat';
+                        otherwise
+                            imgInfo = imfinfo(fullfile(imgFiles(imgFltr(i)).folder, imgFiles(imgFltr(i)).name));
+                            imgWidth = imgInfo(1).Width;
+                            imgHeight = imgInfo(1).Height;
+                            nPlanes = length(imgInfo);
                             if app.options.Frequency > 0
                                 T = 1/(app.options.Frequency);
                             else
                                 answerInfo = inputdlg({'Imaging frequecy (Hz)'}, 'Import data');
                                 T = 1/str2double(answerInfo{1});
                             end
+                            if strcmp(imgInfo(1).ByteOrder, 'big-endian')
+                                tempT{i+1,9} = {[imgInfo.StripOffsets]+1};
+                            else
+                                tempT{i+1,9} = {[imgInfo.StripOffsets]};
+                            end
                     end
-                    tempT{i+1,8} = [imgInfo(1).Width, imgInfo(1).Height, length(imgInfo), 1/T];
-                    if strcmp(imgInfo(1).ByteOrder, 'big-endian')
-                        tempT{i+1,9} = {[imgInfo.StripOffsets]+1};
-                    else
-                        tempT{i+1,9} = {[imgInfo.StripOffsets]};
-                    end
+                    tempT{i+1,8} = [imgWidth, imgHeight, nPlanes, 1/T];
                 end
                 close(hWait);
                 app.imgT = cell2table(tempT(2:end,:), 'VariableNames', tempT(1,:));
@@ -358,6 +397,23 @@ classdef sCaSpA < matlab.apps.AppBase
             cd(oldDir)
             togglePointer(app);
             app.bWarnings.SaveFile = false;
+        end
+        
+        function RestartInterface(app)
+            % Simply remove all the stored data from the dicT and the imgT, not the options
+            app.imgT = [];
+            app.dicT = [];
+            % Clean the plots
+            cla(app.UIAxesDIC);
+            cla(app.UIAxesMovie);
+            cla(app.UIAxesPlot);
+            % Remove the DIC and timelapse dropdown
+            app.DropDownDIC.Items = {};
+            app.DropDownDIC.Value = {};
+            app.DropDownTimelapse.Items = {};
+            app.DropDownTimelapse.Value = {};
+            % Reduce the interaction to the minimum
+            toggleInteractions(app, 'Startup');
         end
         
         function ImportROIs(app)
@@ -572,7 +628,14 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowMovieButton.Value = 0;
                     tempImg = app.imgT.Filename{contains(app.imgT.CellID, app.DropDownTimelapse.Value)};
                     if exist(tempImg, 'file')
-                        updateTimelapse(app, 'Frame', imread(tempImg))
+                        if app.isBioFormat
+                            % Read only the first image of the nd2 file
+                            reader = bfGetReader(tempImg);
+                            series1_plane1 = bfGetPlane(reader, 1);
+                            updateTimelapse(app, 'Frame', series1_plane1)
+                        else
+                            updateTimelapse(app, 'Frame', imread(tempImg))
+                        end
                     end
                 case 'Show StDev'
                     warning('off', 'all');
@@ -586,7 +649,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowFrameButton.Value = 0;
                     app.ShowMovieButton.Value = 0;
                     imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-                    imgStack = loadTiff(app.imgT.Filename{imgIdx}, app.imgT.ImgProperties(imgIdx,:), 0);
+                    fileInfo = app.imgT.ImgProperties(imgIdx,:);
+                    fileInfo(1,4) = app.imgType;
+                    imgStack = loadTiff(app.imgT.Filename{imgIdx}, fileInfo, 0, app.isBioFormat);
                     tempImg = std(double(imgStack),[],3);
                     updateTimelapse(app, 'StDev', tempImg)
                     close(hWait);
@@ -644,7 +709,7 @@ classdef sCaSpA < matlab.apps.AppBase
         function DetectClickDIC(app, event)
             if event.Button == 3
                 if ~app.bZoom
-                    zoomF = 200;
+                    zoomF = round(size(app.dicT.RawImage{1},1) / app.DICZoomEditField.Value);
                     % Zoom in
                     zoomPoint = round(event.IntersectionPoint);
                     xMin = max(0, zoomPoint(1) - zoomF);
@@ -739,7 +804,13 @@ classdef sCaSpA < matlab.apps.AppBase
             for idx = imgIdx
                 hWait.Message = sprintf('Detecting ROIs in: %s', app.imgT.CellID{idx});
                 % First the image and do some filtering
-                img = imread(app.imgT.Filename{idx});
+                if app.isBioFormat
+                    % Read only the first image of the nd2 file
+                    reader = bfGetReader(app.imgT.Filename{idx});
+                    img = bfGetPlane(reader, 1);
+                else
+                    img = imread(app.imgT.Filename{idx});
+                end
                 gaussImg = imgaussfilt(img, app.options.RoiSize*4);
                 gaussImg = imgaussfilt(img-gaussImg,1);
                 % Perform a multilevel threshold
@@ -1483,7 +1554,7 @@ classdef sCaSpA < matlab.apps.AppBase
             showC = str2double(app.DICChannels.SelectedObject.Text(end));
             if sum(whatDIC) == 1
                 dicImg = app.dicT.RawImage{whatDIC};
-                image(dicImg(:,:,showC), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
+                imagesc(dicImg(:,:,showC), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
                 colormap(app.UIAxesDIC, gray)
             else
                 dicFile = app.dicT.Filename(contains(app.dicT.Filename, app.currDIC));
@@ -1509,12 +1580,13 @@ classdef sCaSpA < matlab.apps.AppBase
             % check what we need to plot
             switch imgType
                 case 'Frame'
-                    image(imgShow, 'Parent', app.UIAxesMovie, 'HitTest', 'off');
+                    imagesc(imgShow, 'Parent', app.UIAxesMovie, 'HitTest', 'off');
                     colormap(app.UIAxesMovie, gray)
+                    set(app.UIAxesMovie, 'CLim', [min(imgShow,[],'all') max(imgShow,[],'all')+10])
                     app.UIAxesMovie.XLim = [0 size(imgShow, 1)];app.UIAxesMovie.XTick = [];
                     app.UIAxesMovie.YLim = [0 size(imgShow, 2)];app.UIAxesMovie.YTick = [];
                 case 'StDev'
-                    image(imgShow, 'Parent', app.UIAxesMovie, 'CDataMapping', 'scaled', 'HitTest', 'off');
+                    imagesc(imgShow, 'Parent', app.UIAxesMovie, 'CDataMapping', 'scaled', 'HitTest', 'off');
                     colormap(app.UIAxesMovie, hot)
                     set(app.UIAxesMovie, 'CLim', [min(imgShow,[],'all') max(imgShow,[],'all')+10])
                     app.UIAxesMovie.Title = [];
@@ -1615,9 +1687,20 @@ classdef sCaSpA < matlab.apps.AppBase
                             tempFltr = app.imgT.KeepROI{tempCell};
                             tempData = tempData(tempFltr,:);
                         end
-                        hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
-                        plot(axPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
-                        hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        if ~any(app.dicT.LabeledROIs{tempCell})
+                            hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                            plot(axPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
+                            hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        else
+                            cmap = [.7 .7 .7; .2 .2 .7];
+                            labelRoi = app.dicT.LabeledROIs{tempCell}+1;
+                            labelColor = cmap(labelRoi,:);
+                            hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', labelColor(1,:), 'HitTest', 'off', 'ButtonDownFcn', '');
+                            for p=2:size(tempData,1)-1
+                                plot(axPlot, time, tempData(p,:), 'Color', labelColor(p,:), 'HitTest', 'off', 'ButtonDownFcn', '');
+                            end
+                            hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                        end
                         axPlot.XLim = [time(1) time(end)];
                         if ~isempty(app.imgT.SpikeLocations{tempCell}) && bSpikes
                             spikeLoc = app.imgT.SpikeLocations{tempCell};
@@ -1825,8 +1908,38 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.FrequencyEditField.Enable = 'on';
                     app.LoadDataButton.Enable = 'on';
                     app.OpenDataButton.Enable = 'on';
+                    app.SaveDataButton.Enable = 'off';
+                    app.CleanDataButton.Enable = 'off';
+                    app.DropDownDIC.Enable = 'off';
+                    app.ButtonNextRecording.Enable = 'off';
+                    app.ButtonPreviousRecording.Enable = 'off';
+                    app.DetectROIsButton.Enable = 'off';
+                    app.ImportROIsButton.Enable = 'off';
+                    app.AddROIsButton.Enable = 'off';
+                    app.DeleteROIsButton.Enable = 'off';
+                    app.DropDownTimelapse.Enable = 'off';
+                    app.ShowFrameButton.Enable = 'off';
+                    app.ShowStDevButton.Enable = 'off';
+                    app.ShowMovieButton.Enable = 'off';
+                    app.ROIShapeDropDown.Enable = 'off';
+                    app.ROISizepxsEditField.Enable = 'off';
+                    app.ROIExpectedEditField.Enable = 'off';
+                    app.RegistrationCheckBox.Enable = 'off';
+                    app.ReferenceConditionEditField.Enable = 'off';
+                    app.ZoomXButton.Enable = 'off';
+                    app.ZoomXMin.Enable = 'off';
+                    app.ZoomXMax.Enable = 'off';
+                    app.FixYAxisButton.Enable = 'off';
+                    app.DICChannels.Visible = 'off';
+                    app.ButtonNextCell.Enable = 'off';
+                    app.CellNumberEditField.Enable = 'off';
+                    app.ButtonPreviousCell.Enable = 'off';
+                    app.AddPeakButton.Enable = 'off';
+                    app.RemovePeakButton.Enable = 'off';
+                    app.KeepTraceButton.Enable = 'off';
                 case 'Loaded'
                     app.SaveDataButton.Enable = 'on';
+                    app.CleanDataButton.Enable = 'on';
                     app.DropDownDIC.Enable = 'on';
                     app.ButtonNextRecording.Enable = 'on';
                     app.ButtonPreviousRecording.Enable = 'on';
@@ -1979,7 +2092,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 tic
                 nRoi = size(tempRoi,1);
                 hWait.Message = sprintf('Getting %d ROIs intensity in FOV: %s', nRoi, app.imgT.CellID{imgFltr(i)});
-                imgData = loadTiff(app.imgT.Filename{imgFltr(i)}, app.imgT.ImgProperties(imgFltr(i),:), 0);
+                imgInfo = app.imgT.ImgProperties(imgFltr(i),:);
+                imgInfo(1,4) = app.imgType;
+                imgData = loadTiff(app.imgT.Filename{imgFltr(i)}, imgInfo, 0, app.isBioFormat);
                 nFrames = size(imgData, 3);
                 % Get the Z profile of the ROIs
                 roiIntensities = zeros(nRoi, nFrames);
@@ -2093,7 +2208,7 @@ classdef sCaSpA < matlab.apps.AppBase
             % Create UIFigure and hide until all components are created
             app.UIFigure = uifigure('Visible', 'off', 'Position', [100 100 1485 1000], 'Name', sprintf('sCaSpA: Spontaneous Calcium Spikes Analysis %s', app.options.UIVersion),...
                 'WindowScrollWheelFcn', @(~,event)ScrollDetected(app, event),...
-                'KeyPressFcn', @(~,event)keyPressed(app, event));
+                'KeyPressFcn', @(~,event)keyPressed(app, event), 'Scrollable', 'on');
             % Create the file menu
             app.FileMenu = uimenu(app.UIFigure, 'Text', 'File');
             app.FileMenuOpen = uimenu(app.FileMenu, 'Text', 'Load new data',...
@@ -2208,12 +2323,14 @@ classdef sCaSpA < matlab.apps.AppBase
             app.DetrendWindowfrEditField = uieditfield(app.DetrendingOptionsPanel, 'numeric', 'Position', [138 25 90 22], 'Value',  app.options.DetrendSize, 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             % Useful buttons
-            app.LoadDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [65 8 100 22], 'Text', 'Load new', 'Enable', 'off',...
+            app.LoadDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [8 8 100 22], 'Text', 'Load new', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @FileMenuOpenSelected, false));
-            app.OpenDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [175 8 100 22], 'Text', 'Open data', 'Enable', 'off',...
+            app.OpenDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [118 8 100 22], 'Text', 'Open data', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @FileMenuLoadSelected, false));
-            app.SaveDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [285 8 100 22], 'Text', 'Save', 'Enable', 'off',...
+            app.SaveDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [228 8 100 22], 'Text', 'Save', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @FileMenuSaveSelected, false));
+            app.CleanDataButton = uibutton(app.NetworkActivityOptionsPanel, 'push', 'Position', [338 8 100 22], 'Text', 'Restart', 'Enable', 'off',...
+                'ButtonPushedFcn', createCallbackFcn(app, @RestartInterface, false));
             % Create Spike Detection Panel
             app.SpikeDetectionPanel = uipanel(app.UIFigure, 'Title', 'Spike Detection', 'Position', [1022 411 453 83]);
             app.DetectionButtonGroup = uibuttongroup(app.SpikeDetectionPanel, 'Position', [6 6 207 53]);
@@ -2264,10 +2381,12 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ButtonPushedFcn', createCallbackFcn(app, @keepTraceOrPoint, true));
             app.NetworkThresholdLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 169 100 22], 'Text', 'Network %');
             app.NetworkThresholdLabelEditField = uieditfield(app.OtherInteractionPanel, 'numeric', 'Position', [112 169 100 22], 'Enable', 'on', 'Value', 80);
-            app.NetworkLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [218 169 100 22], 'Text', 'Network level');
-            app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [324 169 100 22], 'Value', '25%');
-            app.SynchLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [218 138 100 22], 'Text', 'Synch level');
-            app.SynchLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [324 138 100 22], 'Value', '90%');
+            app.DICZoomLabel = uilabel(app.OtherInteractionPanel, 'Position', [330 200 80 22], 'Text', 'Zoom factor');
+            app.DICZoomEditField = uieditfield(app.OtherInteractionPanel, 'numeric', 'Position', [404 200 40 22], 'Enable', 'on', 'Value', 5);
+            app.NetworkLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 138 100 22], 'Text', 'Network level');
+            app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 138 100 22], 'Value', '25%');
+            app.SynchLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 107 100 22], 'Text', 'Synch level');
+            app.SynchLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 107 100 22], 'Value', '90%');
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
