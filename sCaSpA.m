@@ -335,6 +335,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 if isfield(networkFiles, 'dicT')
                     if isempty(app.dicT)
                         app.dicT = networkFiles.dicT;
+                        app.isBioFormat = contains(app.dicT.Filename{1},'.nd2');
                     else
                         app.dicT = [app.dicT; networkFiles.dicT];
                     end
