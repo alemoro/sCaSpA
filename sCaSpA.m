@@ -333,9 +333,11 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.options.UIVersion = sprintf('%d.%d#%d', app.majVer, app.minVer, app.dailyBuilt);
                 end
                 if isfield(networkFiles, 'dicT')
+                    app.isBioFormat = contains(networkFiles.dicT.Filename{1},'.nd2');
+                    app.imgType = class(networkFiles.dicT.RawImage{1});
+                    app.imgType = str2double(regexprep(app.imgType, 'uint', ''));
                     if isempty(app.dicT)
                         app.dicT = networkFiles.dicT;
-                        app.isBioFormat = contains(app.dicT.Filename{1},'.nd2');
                     else
                         app.dicT = [app.dicT; networkFiles.dicT];
                     end
