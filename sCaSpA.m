@@ -162,8 +162,9 @@ classdef sCaSpA < matlab.apps.AppBase
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
-        dailyBuilt = 0;
+        dailyBuilt = 1;
         % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
+        %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
         
     end
     
@@ -325,7 +326,7 @@ classdef sCaSpA < matlab.apps.AppBase
             if filePath ~= 0
                 % Save the path to the settings
                 app.options.LastPath = filePath;
-                togglePointer(app)
+                hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading', 'Message', sprintf('Loading %s', fileName), 'Indeterminate', 'on');
                 networkFiles = load(fullfile(filePath, fileName));
                 if isfield(networkFiles, 'options')
                     app.options = networkFiles.options;
@@ -333,14 +334,21 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.options.UIVersion = sprintf('%d.%d#%d', app.majVer, app.minVer, app.dailyBuilt);
                 end
                 if isfield(networkFiles, 'dicT')
-                    app.isBioFormat = contains(networkFiles.dicT.Filename{1},'.nd2');
-                    app.imgType = class(networkFiles.dicT.RawImage{1});
-                    app.imgType = str2double(regexprep(app.imgType, 'uint', ''));
                     if isempty(app.dicT)
                         app.dicT = networkFiles.dicT;
                     else
                         app.dicT = [app.dicT; networkFiles.dicT];
                     end
+                end
+                if isfield(networkFiles, 'additional')
+                    app.currDIC = networkFiles.additional.currDIC;
+                    app.isBioFormat = networkFiles.additional.isBioFormat;
+                    app.imgType = networkFiles.additional.imgType;
+                else
+                    app.isBioFormat = contains(networkFiles.dicT.Filename{1},'.nd2');
+                    app.imgType = class(networkFiles.dicT.RawImage{1});
+                    app.imgType = str2double(regexprep(app.imgType, 'uint', ''));
+                    app.currDIC = app.dicT.CellID{1};
                 end
                 if isfield(networkFiles, 'imgT')
                     if isempty(app.imgT)
@@ -364,10 +372,9 @@ classdef sCaSpA < matlab.apps.AppBase
                         uialert(app.UIFigure, 'The table structure was modified to fit in version 1.1', 'Modified structure');
                     end
                 end
-                togglePointer(app)
+                close(hWait);
             end
             % Populate tehe DIC dropdown menu and show the first image
-            app.currDIC = app.dicT.CellID{1};
             app.nChannel = size(app.dicT.RawImage{1},3);
             updateDropDownDIC(app);
             % Populate the timelapse dropdown and show the first frame
@@ -390,15 +397,16 @@ classdef sCaSpA < matlab.apps.AppBase
             % Then save the data
             oldDir = cd(app.options.LastPath);
             [fileName, filePath] = uiputfile('*.mat', 'Save network data');
-            togglePointer(app);
+            hWait = uiprogressdlg(app.UIFigure, 'Title', 'Saving', 'Message', sprintf('Saving the analysis to %s', fileName), 'Indeterminate', 'on');
             savePath = fullfile(filePath, fileName);
             figure(app.UIFigure);
             imgT = app.imgT;
             dicT = app.dicT;
             options = app.options;
-            save(savePath, 'imgT', 'dicT', 'options');
+            additional = struct('currDIC', app.currDIC, 'isBioFormat', app.isBioFormat, 'imgType', app.imgType);
+            save(savePath, 'imgT', 'dicT', 'options', 'additional');
             cd(oldDir)
-            togglePointer(app);
+            close(hWait);
             app.bWarnings.SaveFile = false;
         end
         
