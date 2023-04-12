@@ -125,6 +125,7 @@ classdef sCaSpA < matlab.apps.AppBase
         options % Store the options
         tempAddPeak = []; % Temp variable for adding new peaks
         tempRemovePeak = []; % Temp variable for removing peaks
+        removeROI = [];
         YMinMax % Store the minimum and maximum value of the Y axis in this FOV
         bSave % Toggle if there is new data that need to be saved
     end
@@ -162,9 +163,10 @@ classdef sCaSpA < matlab.apps.AppBase
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
-        dailyBuilt = 1;
+        dailyBuilt = 2;
         % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
         %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
+        %                - 230412 = 2 -> Start implementation of Delete ROIs button, improve loading of 16-bit images, improved file extenstion management
         
     end
     
@@ -236,7 +238,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         app.nChannel = numel(dicInfo);
                         dicWidth = dicInfo(1).Width;
                         dicHeight = dicInfo(1).Height;
-                        tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, 'uint8')}, height(tempT), 1);
+                        tempDicImage = repmat({zeros(dicHeight, dicWidth, app.nChannel, sprintf('uint%d', dicInfo(1).BitDepth))}, height(tempT), 1);
                         for i = 1:size(tempT,1)
                             hWait.Value = i/sum(dicFltr);
                             hWait.Message = sprintf('Loading DIC data %0.2f%%', i/sum(dicFltr)*100);
@@ -284,6 +286,7 @@ classdef sCaSpA < matlab.apps.AppBase
                             imgInfo = imfinfo(fullfile(imgFiles(imgFltr(i)).folder, imgFiles(imgFltr(i)).name));
                             imgWidth = imgInfo(1).Width;
                             imgHeight = imgInfo(1).Height;
+                            app.imgType = imgInfo(1).BitDepth;
                             nPlanes = length(imgInfo);
                             if app.options.Frequency > 0
                                 T = 1/(app.options.Frequency);
@@ -332,6 +335,8 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.options = networkFiles.options;
                     % Add set the version of the current built
                     app.options.UIVersion = sprintf('%d.%d#%d', app.majVer, app.minVer, app.dailyBuilt);
+                    % Update the options to reflect the data
+                    importOptions(app);
                 end
                 if isfield(networkFiles, 'dicT')
                     if isempty(app.dicT)
@@ -781,6 +786,23 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Show the change
                 app.patchMask(fltr).EdgeColor = app.keepColor(2,:);
             end
+            % Delete ROIs
+            if app.DeleteROIsButton.Value
+                % First gather all the ROIs for the image
+                tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                allRois = app.dicT.RoiSet{tempDIC};
+                currRoi = [allRois - app.options.RoiSize allRois + app.options.RoiSize];
+                selRoi = round(event.IntersectionPoint(1:2));
+                fltr = find((currRoi(:,1) < selRoi(1) & currRoi(:,3) > selRoi(1)) & (currRoi(:,2) < selRoi(2) & currRoi(:,4) > selRoi(2)),1);
+                if ~isempty(fltr)
+                    app.removeROI = [app.removeROI fltr];
+                    hold(app.UIAxesDIC, 'on')
+                    hold(app.UIAxesMovie, 'on')
+                    plot(app.UIAxesDIC, [currRoi(fltr,[1 3]) NaN currRoi(fltr,[3 1])], [currRoi(fltr,[2 4]) NaN currRoi(fltr,[2 4])], 'Color', app.keepColor(1,:), 'HitTest', 'off');
+                    plot(app.UIAxesMovie, [currRoi(fltr,[1 3]) NaN currRoi(fltr,[3 1])], [currRoi(fltr,[2 4]) NaN currRoi(fltr,[2 4])], 'Color', app.keepColor(1,:), 'HitTest', 'off');
+                end
+            end
+            % Select ROIs
             if matches(app.PlotTypeButtonGroup.SelectedObject.Text, 'Single Trace')
                 % First gather all the ROIs for the image
                 tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
@@ -907,6 +929,32 @@ classdef sCaSpA < matlab.apps.AppBase
                     % Store that we are done
                     app.changeROI = false;
                 case 'Import'
+                case 'Delete ROIs'
+                    tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                    tempMovie = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                    % Remove the ROIs from the DIC
+                    app.dicT.RoiSet{tempDIC}(app.removeROI,:) = [];
+                    app.dicT.LabeledROIs{tempDIC}(app.removeROI,:) = [];
+                    % Remove the data from the imgT
+                    app.imgT.RawIntensity{tempMovie}(app.removeROI,:) = [];
+                    app.imgT.FF0Intensity{tempMovie}(app.removeROI,:) = [];
+                    app.imgT.DetrendData{tempMovie}(app.removeROI,:) = [];
+                    app.imgT.KeepROI{tempMovie}(app.removeROI,:) = [];
+                    if ~isempty(app.imgT.SpikeLocations{tempMovie})
+                        app.imgT.SpikeLocations{tempMovie}(app.removeROI,:) = [];
+                        app.imgT.SpikeIntensities{tempMovie}(app.removeROI,:) = [];
+                        app.imgT.SpikeWidths{tempMovie}(app.removeROI,:) = [];
+                    end
+                    app.removeROI = [];
+                    updateDIC(app);
+                    button.Source.Text = 'Show Frame';
+                    if app.ShowStDevButton.Value
+                        button.Source.Text = 'Show StDev';
+                    end
+                    if app.ShowMovieButton.Value
+                        button.Source.Text = 'Show Movie';
+                    end
+                    ShowTimelapseChanged(app, button)
                     
             end
             app.bWarnings.SaveFile = true;
@@ -2210,6 +2258,32 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             figure(app.UIFigure);
         end
+        
+        function importOptions(app)
+            switch app.options.Microscope
+                case {'Nikon Ti2'; 'Nikon A1'}
+                    app.options.Microscope = 'nd2';
+                case 'Other'
+                    app.options.Microscope = 'tif';
+            end
+            app.StillConditionEditField.Value = app.options.StillCondition;
+            app.MicroscopeDropDown.Value = app.options.Microscope;
+            app.FrequencyEditField.Value = app.options.Frequency;
+            app.MethodDropDown.Value = app.options.PeakMinHeight;
+            app.ThresholdEditField.Value = app.options.SigmaThr;
+            app.MinProminanceEditField.Value = app.options.PeakMinProminance;
+            app.MinDistanceframesEditField.Value = app.options.PeakMinDistance;
+            app.MinDurationframesEditField.Value = app.options.PeakMinDuration;
+            app.MaxDurationframesEditField.Value = app.options.PeakMaxDuration;
+            app.TraceToUseDropDown.Value = app.options.DetectTrace;
+            app.ROIShapeDropDown.Value = app.options.RoiShape;
+            app.ROISizepxsEditField.Value = app.options.RoiSize;
+            app.ROIExpectedEditField.Value = app.options.ExpectedRoi;
+            app.RegistrationCheckBox.Value = app.options.Registration;
+            app.ReferenceConditionEditField.Value = app.options.Reference;
+            app.DetrendingMethodDropDown.Value = app.options.Detrending;
+            app.DetrendWindowfrEditField.Value = app.options.DetrendSize;
+        end
     end
     
     % Component initialization
@@ -2282,8 +2356,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.StillConditionEditFieldLabel = uilabel(app.LoadOptionsPanel, 'Position', [7 73 80 22], 'Text', 'Still Condition');
             app.StillConditionEditField = uieditfield(app.LoadOptionsPanel, 'text', 'Placeholder', app.options.StillCondition, 'Position', [87 73 90 22],...
                 'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
-            app.MicroscopeDropDownLabel = uilabel(app.LoadOptionsPanel, 'Position', [7 42 80 22], 'Text', 'Microscope');
-            app.MicroscopeDropDown = uidropdown(app.LoadOptionsPanel, 'Items', {'Nikon A1', 'Nikon Ti2', 'Other'}, 'Position', [87 42 90 22], 'Value',  app.options.Microscope, 'Enable', 'off',...
+            app.MicroscopeDropDownLabel = uilabel(app.LoadOptionsPanel, 'Position', [7 42 80 22], 'Text', 'File format');
+            app.MicroscopeDropDown = uidropdown(app.LoadOptionsPanel, 'Items', {'nd2', 'tif'}, 'Position', [87 42 90 22], 'Value',  app.options.Microscope, 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @SaveOptions, true));
             app.FrequencyEditFieldLabel = uilabel(app.LoadOptionsPanel, 'Position', [6 11 80 22], 'Text', 'Frequency');
             app.FrequencyEditField = uieditfield(app.LoadOptionsPanel, 'numeric', 'Position', [87 11 90 22], 'Value', app.options.Frequency, 'Enable', 'off',...
@@ -2445,6 +2519,13 @@ classdef sCaSpA < matlab.apps.AppBase
             app.options.Reference = s.sCaSpA.Reference.ActiveValue;
             app.options.Detrending = s.sCaSpA.Detrending.ActiveValue;
             app.options.DetrendSize = s.sCaSpA.DetrendSize.ActiveValue;
+            % Adjust the value of the microscope to reflect the file format (not ideal)
+            switch app.options.Microscope
+                case {'Nikon Ti2'; 'Nikon A1'}
+                    app.options.Microscope = 'nd2';
+                case 'Other'
+                    app.options.Microscope = 'tif';
+            end
         end
         
         function saveSettings(app)
