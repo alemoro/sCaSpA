@@ -221,7 +221,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 end
                 tempT.ExperimentID = expIDs(dicFltr);
                 switch app.options.Microscope
-                    case {'Nikon A1' 'Nikon Ti2'}
+                    case 'nd2'
                         try
                             dicInfo = bfGetReader(tempT.Filename{1});
                             dicInfo = dicInfo.getMetadataStore();
@@ -286,7 +286,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     tempT{i+1,7} = [imgIDs{i}{1} '_' imgIDs{i}{3}]; % use to link the DIC to the movies
                     % get the imaging period (T) and frequency (Fs) from the file
                     switch app.options.Microscope
-                        case {'Nikon A1' 'Nikon Ti2'}
+                        case 'nd2'
                             imgInfo = bfGetReader(fullfile(imgFiles(imgFltr(i)).folder, imgFiles(imgFltr(i)).name));
                             imgInfo = imgInfo.getMetadataStore();
                             imgWidth = imgInfo.getPixelsSizeX(0).getValue();
@@ -1810,7 +1810,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         cellN = app.CellNumberEditField.Value;
                         hold(axPlot, 'off')
                         legend(axPlot, 'off');
-                        if any(contains(app.imgT.Properties.VariableNames, 'SpikeProperties')) && bSpikes
+                        if any(contains(app.imgT.Properties.VariableNames, 'SpikeProperties')) && ~isempty(app.imgT.SpikeProperties{tempCell}) && bSpikes
                             % Get the start and ends of the events
                             evStart = app.imgT.SpikeProperties{tempCell}{cellN,9}(2,:);
                             evEnd = app.imgT.SpikeProperties{tempCell}{cellN,10}(2,:);
