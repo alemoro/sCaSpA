@@ -163,10 +163,11 @@ classdef sCaSpA < matlab.apps.AppBase
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
-        dailyBuilt = 2;
+        dailyBuilt = 3;
         % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
         %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
         %                - 230412 = 2 -> Start implementation of Delete ROIs button, improve loading of 16-bit images, improved file extenstion management
+        %                - 230413 = 3 -> Fixed changing the movie for multiple recording on the same FOV
         
     end
     
@@ -587,6 +588,19 @@ classdef sCaSpA < matlab.apps.AppBase
             app.currDIC = app.DropDownDIC.Value;
             updateDIC(app);
             updateDropDownTimelapse(app);
+            button.Source.Text = 'Show Frame';
+            if app.ShowStDevButton.Value
+                button.Source.Text = 'Show StDev';
+            end
+            if app.ShowMovieButton.Value
+                button.Source.Text = 'Show Movie';
+            end
+            ShowTimelapseChanged(app, button)
+            updatePlot(app);
+            figure(app.UIFigure);
+        end
+        
+        function ChangeMovie(app)
             button.Source.Text = 'Show Frame';
             if app.ShowStDevButton.Value
                 button.Source.Text = 'Show StDev';
@@ -2327,7 +2341,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ValueChangedFcn', createCallbackFcn(app, @crosshairDIC, true));
             app.DeleteROIsButton = uibutton(app.UIFigure, 'state', 'Text', 'Delete ROIs', 'Position', [586 964 100 22], 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @crosshairDIC, true));
-            app.DropDownTimelapse = uidropdown(app.UIFigure, 'Items', {}, 'Placeholder', 'Timelapse_ID', 'Position', [704 964 200 22], 'Value',  {}, 'Enable', 'off');
+            app.DropDownTimelapse = uidropdown(app.UIFigure, 'Items', {}, 'Placeholder', 'Timelapse_ID', 'Position', [704 964 200 22], 'Value',  {}, 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangeMovie, false));
             app.ShowFrameButton = uibutton(app.UIFigure, 'state', 'Text', 'Show Frame', 'Position', [913 964 100 22], 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @ShowTimelapseChanged, true));
             app.ShowStDevButton = uibutton(app.UIFigure, 'state', 'Text', 'Show StDev', 'Position', [1015 964 100 22], 'Enable', 'off',...
