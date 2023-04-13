@@ -189,7 +189,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Load the data starting from the DIC/BF/Still image
                 hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading images data');
                 % See if we need to open an nd2 file or not
-                if strcmp(app.options.Microscope, 'Nikon Ti2')
+                if strcmp(app.options.Microscope, 'nd2')
                     imgFiles = dir(fullfile(imgPath, '*.nd2'));
                     app.isBioFormat = true;
                 else
@@ -206,7 +206,19 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempT = table;
                 tempT.Filename = fullfile({imgFiles(dicFltr).folder}', {imgFiles(dicFltr).name}');
                 tempT.CellID = cellfun(@(x) x(1:end-4), {imgFiles(dicFltr).name}', 'UniformOutput', false);
-                expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{3}), nameParts, 'UniformOutput', false);
+                % Check if there is extra labels between the DIC and the movie
+                dicPartsNumber = numel(nameParts{find(dicFltr,1)});
+                moviePartsNumber = numel(nameParts{find(~dicFltr,1)});
+                if dicPartsNumber == moviePartsNumber+1
+                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{4}), nameParts, 'UniformOutput', false);
+                elseif dicPartsNumber == moviePartsNumber
+                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{3}), nameParts, 'UniformOutput', false);
+                else
+                    close(hWait)
+                    togglePointer(app)
+                    uialert(app.UIFigure, 'Still and timelapse names do not match.', 'Invalid names');
+                    return
+                end
                 tempT.ExperimentID = expIDs(dicFltr);
                 switch app.options.Microscope
                     case {'Nikon A1' 'Nikon Ti2'}
@@ -586,7 +598,6 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function SelectedDIC(app)
             app.currDIC = app.DropDownDIC.Value;
-            updateDIC(app);
             updateDropDownTimelapse(app);
             button.Source.Text = 'Show Frame';
             if app.ShowStDevButton.Value
@@ -595,8 +606,9 @@ classdef sCaSpA < matlab.apps.AppBase
             if app.ShowMovieButton.Value
                 button.Source.Text = 'Show Movie';
             end
+            updateDIC(app);
             ShowTimelapseChanged(app, button)
-            updatePlot(app);
+            %updatePlot(app);
             figure(app.UIFigure);
         end
         
@@ -1746,6 +1758,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 bSpikes = varargin{find(strcmpi(varargin, 'bSpikes'))+1};
             end
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+            tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
             if ~isempty(app.imgT.DetrendData{tempCell})
                 tempData = app.imgT.DetrendData{tempCell};
                 Fs = app.imgT.ImgProperties(tempCell,4);
@@ -1760,13 +1773,13 @@ classdef sCaSpA < matlab.apps.AppBase
                             tempFltr = app.imgT.KeepROI{tempCell};
                             tempData = tempData(tempFltr,:);
                         end
-                        if ~any(app.dicT.LabeledROIs{tempCell})
+                        if ~any(app.dicT.LabeledROIs{tempDIC})
                             hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
                             plot(axPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
                             hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
                         else
                             cmap = [.7 .7 .7; .2 .2 .7];
-                            labelRoi = app.dicT.LabeledROIs{tempCell}+1;
+                            labelRoi = app.dicT.LabeledROIs{tempDIC}+1;
                             labelColor = cmap(labelRoi,:);
                             hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', labelColor(1,:), 'HitTest', 'off', 'ButtonDownFcn', '');
                             for p=2:size(tempData,1)-1

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Quick start</title>
+  
+</head>
+
+<body>
+	<h1>Quick start with Fusion Analysis 2</h1>
+	<p>
+		This page provides a quick tour of how the program works. For more detailed information and background, select one of the links in the navigation menu on the 
+		left hand side.
+	</p>
+	<h2>Preparing and loading data</h2>
+	<p>
+		In order to start using the program, make sure that the data has the proper format for importing. Use the <a href="protocol.html#templatecreator" target="content">template creator</a> 
+		in the <b>Help</b> menu to create an Excel file suitable for import. Once you have the measurements from ImageJ into the template file, import the data using
+		<b>File | Load data</b> in the menu. If there were problems during the import, you can check the log using the <b>Help | Log</b> menu or the button with the 
+		exclamation mark on the toolbar. 
+	</p>
+    
+    <h2>Detecting fusion events</h2>
+    <p>
+    	Once the data has been loaded, the settings for detection can be checked to see if the program can detect the events automatically. To check the detection, 
+    	select the <b>Analysis | Explore detection</b> option from  the menu. The window that opens shows the current trace that was active when the explore interface 
+    	was opened, and the detection settings can be found on the left side. In the top plot, the detected event(s) will be indicated by green (event start) and red 
+    	(event end)	circles. Adjust the settings until the event(s) are detected correctly. The <i>Next</i> and <i>Prev</i> button can be used to look at other traces 
+    	to see if detection is still OK. The main parameters to adjust are the <b>Clean len</b>, <b>Clean off</b>, <b>Pk Prom</b> and <b>Pk Hght</b>. For more detail on 
+    	these parameters, consult the <a href="algorithms.html#automatic" target="content">automatic detection</a> section on the algorithms page. Once the settings are correct, 
+    	use the <i>Apply</i> button to save the settings.
+    </p>
+    <p>
+    	Once the settings are applied, the only setting that may be important to check is the <i>Multiple detection</i> setting: when you wish to detect multiple events 
+    	per release site, this option needs to be set. The settings can be adjusted by selecting <b>Edit | Preferences</b> from the menu. Everything is now set for fusion 
+    	detection: this can be done by selecting <b>Analysis | Fusion detection</b> option from the menu. The detection will go over all the traces and will try to 
+    	detect all the events that meet the detection criteria. After the detection has finished, the table and plots will be updated to show the results. If you created 
+    	a sheet with the fusion times yourself, you can select <b>Analysis | Manual detection</b> from the menu.
+    </p>
+    
+    <h2>Reviewing fusion events</h2>
+    <p>
+    	After the detection has completed, the events can be reviewed to make sure that any false detections or incorrect timings are corrected. The goal of this stage is 
+    	to make sure that the data is in the correct state for classification and export. Traces without events can be removed, but this is not necessary for further 
+    	analysis. By clicking on an event in the table, the trace of that site will be plotted, as well as the zoom shown in the detail plot. By right clicking on a location 
+    	in the detail plot, the time of the start or end point can be adjusted manually. If the event does not exceed the detection threshold, no change is made to the event.
+    </p>
+    	To facilitate the localization of undetected events, there is a <b>Sort Event</b> button abopve the table. This will cluster all the undetected traces at the top of the table,
+        followed by the slow detected and by the standard detected ones as last block. The edges of the three blocks are easily spotted by their goodness value (<i>NaN</i> for the
+        undetected, <i>0.5999 or 0.9999</i> for the slow detected and a value between <i>0 and 1</i> for the standard detected. The sorting of the events works on the current cell
+        and not for the entire dataset.
+    <p>
+    	It is possible to remove events by deselecting the checkbox in the <b>Keep?</b> column of the summary table. This allows the user to select or deselect an event, 
+    	which allows the removal of erroneous detections. When clicking on a checkbox it will remove the event from the plots. However, when you immediately click again, 
+    	the event is not updated. By clicking in a different column on the same row and then clicking on the checkbox, the event is correctly added or removed. This limitation 
+    	is within Matlab and cannot easily be remedied for the time being. The checkbox above the table allows the user to view either all events or only the ones that are of good 
+    	quality. There is also an option to filter out events based on a quality or peak fold criterium. Using the options in the <b>Edit | Filter...</b> menu allows filtering of the events 
+    	using thresholds. The default value for quality is <font color="blue"><b>0.3</b></font> and the default value for peak fold is <font color="blue"><b>1.5</b></font>, 
+    	which in many cases will separate the correct detections from the poor or bad detections. There is also an option to include all events, causing a reset of the keep filter. 
+    	When using the filter, you will be asked to process all cells or only the current cell. All plotting functions will remove the deselected events from their output. To 
+    	remove the events permanently, select <b>Edit | Remove... | Deselected events</b> from the menu and confirm that you are sure (there is 
+    	<font color="red"><b>NO undo</b></font> for this one).
+    </p>
+    <p>
+    	At this stage, it is also possible to add non-releasing cells to the data structure. Non-releasing cells are cells that were imaged but showed no increase in signal. 
+    	The addition of silent cells allows the plotting of the number of releasing versus non-releasing cells, but does not influence the fusion analysis. It is also possible 
+    	to relabel cells with an excessive number of events (outliers) by selecting <b>Edit | Relabel outliers</b> in the menu. The threshold value used for relabeling is in 
+    	the preferences and is best set based on the boxplot for the number of events.
+    </p>
+    
+    <h2>Examining events using the movie viewer</h2>
+    <p>
+    	In the <b>View</b> menu, there is an option to launch the movie viewer: this separate interface allows you to load an image and the corresponding regions and display them. If the 
+    	location of the image file and the corresponding regions are available, the movie viewer will display them directly. If the file locations are not available, the image and ROI data 
+    	can be loaded via the <b>File</b> menu in the movie viewer interface, as displayed below.
+    	<div>
+    		<figure>
+		    	<img src="movie_viewer.png" alt="Movie viewer interface"/><br />
+		    	<figcaption align="center">
+		    		<i><b>Figure 1:</b> The movie viewer, with a time series loaded and ROIs displayed with cyan rectangles.</i>
+		    	</figcaption>
+		    </figure>
+  		  </div>
+    </p>
+    <p>
+    	The brightness of the channel can be adjusted using the sliders on the right (one for each channel): moving the slider to the right makes the intensity of the pixels higher, while 
+    	moving the slider to the left will make the intensities lower. To reset the intensities, go to <b>Image | Reset brightness</b> in the menu. The slider below the image allows you to 
+    	move through the frames in steps of 1 or 10 frames. The left and right arrow keys allow you to step 1 frame backwards or forwards in time, respectively. If holding the <i>Shift</i> 
+    	key while pressing the arrow keys, the step size is increased to 10 frames, and holding the <i>Control</i> key allows you to navigate with a step size of 50 frames. Clicking on a region 
+    	in the table to the right of the image allows you to view a specific ROI in high detail: the image will be displayed centered around the selected ROI, and the frame in which the 
+    	region was placed will be selected. To return to the unzoomed image, select <b>Image | Reset zoom</b> from the menu.
+    </p>
+    <p>
+    	This code requires that the BioFormats toolbox for Matlab is available and is on the search path. If not present, it can be found at 
+    	<a href="http://downloads.openmicroscopy.org/bio-formats/5.2.3/">the Open Microscopy website</a> under the heading <b>MATLAB Toolbox</b>. For loading the ImageJ ROIs, code from 
+    	Dylan Muir was used (FileExchange ID: #32479), which is included in the dependencies folder. Please note that loading large files might not work properly and images with more than 
+    	4 dimensions are not supported, nor time series with more than 3 channels. If data is encoded as Z instead of T, the slices will be interpreted as frames automatically.
+    </p>
+    
+    <h2>Classifying fusion events</h2>
+    <p>
+    	After the events have been reviewed and corrected, the classification of the events can be performed. Classification is based on a few key properties of fusion events, 
+    	which can be set in the preferences. In order to set the values, it can be helpful to examine the histogram of the fusion duration to see whether there appear to be 2 
+    	separate groups. The current value that is used for dividing the events in transient and persistent is indicated by a dashed line. If the value needs to be changed, 
+    	change the value for <i>Max trans duration (s)</i> in the classification panel in the preferences.
+    </p>
+    <p>
+    	After the settings for classification have been reviewed, the classification can be performed by selecting the <b>Analysis | Classification | Perform all</b> option in 
+    	the menu. Please note that when a large number of events are loaded, this step may take several minutes, mostly due to fitting the decay 
+    	rate for each event. Once it has finished, the plot and table will be updated to show the new parameters that were obtained.
+    </p>
+    
+    <h2>Exporting data</h2>
+    <p>
+    	After the detection and classification, the data can be viewed and exported in several ways. Example traces of &Delta;F/F<sub>0</sub> can be created using the 
+    	<b>Plots | Current trace</b> from the menu. This will open a new window with the traces, which can be saved using <b>File | Save as...</b> in the image window. 
+    	It is also possible to plot histograms and box plots of most of the parameters using the <b>Plots | Histograms...</b> and <b>Plots | Box plots...</b> items in the menu. 
+    	Cumulative traces for fusion onset and duration can be created using the <b>Plots | Cumulatives...</b> option in the menu. Finally, there is also an option to 
+    	create a heatmap picture showing the number of events or the first onset time projected over a background image. For more details and background, see the help page on 
+    	<a href="plotting.html" target="content">plotting</a>.
+    </p>
+    <p>
+    	The processed data can also be exported in a file suitable for Excel or SPSS and R for statistical analysis. The format will be similar to the table in the main interface. 
+    	There is also an option to export the data in a format suitable for survival (time-to-event) analysis, which can be found in the <b>File | Export...</b> submenu. The output 
+    	of this option is always a tab-delimited text file that can be imported directly into R. For a brief explanation of survival analysis and the data format, 
+    	refer to the documentation in the <a href="statistics.html#survival" target="content">statistics section</a> of this help. That section also shows some example commands on how to perform 
+    	the analysis in R.
+    </p>
+    
+</body>
+</html>
