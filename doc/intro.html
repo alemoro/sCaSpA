@@ -2,98 +2,54 @@
 <html>
 <head>
 	<meta charset="utf-8" />
-	<title>Introduction</title>
+	<title>sCaSpA - Quick Start</title>
 </head>
 <a name="top"></a>
 <body>
 
-	<h1>Introduction</h1>
+	<h1>Quick start</h1>
     <a name="app"></a>
     <h2>Starting the application</h2>
     <p>
     The goal of this program is analysing spontaneous calcium spikes in neuronal cultures. Starting the aplication can be done by running the <b>sCaSpA.m</b> file.
-	Please make sure that the main application folder is added to the MATLAB path, as well as the dependencies folder. See the <a href="quick_start.html" target="content">quick start page</a>
-	for a quick introduction on how to import, process and export the data. 
+	Please make sure that the main application folder is added to the MATLAB path, as well as the dependencies folder.
     </p>
-	<h2>Data collection</h2>
+	
+	<h2>Import the data</h2>
 	<p>
-	To succeffully import
+	The data should be organized into one folder containing an equal number of files for the still images (used to manually identify the region of interest) and timelapse recordings.
+	For the program it is important that the files are named in a specific way. Currently there are two accepted filename:
+	<ul>
+		<li>For the still: yymmdd_StillCondition_WellID_fovID. For the timelapse: yymmdd_Condition_WellID_fovID.
+		<br>For example, the two files would like 220515_DIC_WellA01_001 and 220515_MyExperiment_WellA01_001.</li>
+		<br><br>
+		<li>For the still: yymmdd_Condition_Still_WellID_fovID. For the timelapse: yymmdd_Condition_WellID_fovID.
+		<br>For example, the two files would like 220515_MyExperiment_DIC_WellA01_001 and 220515_MyExperiment_WellA01_001.</li>
+	</ul>
+	For both cases it is essential to have 3-4 underscores for the still condition and 3 for the timelapse. This is because the program will automatically link the two sets of images
+	based on the <i>date</i> and the <i>WellID</i>. Both <b>nd2</b> and <b>tif</b> files can be open, but only one file type at the time is supported.
+	
+	<br><br>Once the data is succefully loaded into the interface, the still image and the first frame of the timelapse will appear on the left and right side of the interface.
+	Additionally, several interaction buttons will become availabe.
 	</p>
-    <h2>Main interface</h2>
-    <p>
-    After starting the main interface it will show the interface with some controls inactivated and ready for loading data. After loading the data and performing the 
-    detection, all controls are active and allow for reviewing parameters and detection.
-    <div>
-        <figure>
-            <img src="main_dialog_empty.png" alt="Main dialog (empty)" /><br />
-            <figcaption>Figure 1: Main dialog after loading and detection</figcaption>
-        </figure>
-    </div><br />
-    Highlighted are the <font color="lightgreen">menu and tool bar</font>, the <font color="blue">condition and cell navigation</font>, the 
-    <font color="lightblue">plot type</font>, the <font color="cyan">results table</font> and <font color="orange">plots</font>.
-    </p>
-    <h3>Menu bar</h3>
-    <p>
-    The menu has many functions that allow for reviewing the data and generating plots. The <b>File</b> menu allows you to load data, and save a session file after 
-    importing data, as well as exporting data to different output formats (see the <a href="export.html" target="content">output documentation</a>). The <b>Edit</b> 
-    menu allows you to remove all data, the current cell or the current site. If data is loaded, you can add non-releasing cells or relabel cell conditions. There is also 
-    an option to relabel outliers, which will move them to a new group. You can also adjust the detection and classification settings via the preferences option (see the 
-    <a href="prefs.html" target="content">preferences documentation</a>). The <b>Analysis</b> menu allows for exploring the detection settings, as well as performing the 
-    detection and classification (see the <a href="algorithms.html" target="content">algorithms documentation</a>). The <b>Plots</b> menu is available after detection has 
-    been completed, and allows you to plot several parameters in different plot styles (see the <a href="plotting.html" target="content">plotting documentation</a>). The 
-    <b>Help</b> menu shows this documentation, as well as an about dialog with the version information of the software and data container. It also has the template creator 
-    function, which allows the creation of a suitable Excel file for data import (see the <a href="protocol.html" target="content">protocol information</a>).
-    </p>
-    <h3>Tool bar</h3>
-    <p>
-    	The tool bar contains controls for viewing and navigating the sites, as well as viewing the plots. 
-    	<div>
-    		<figure>
-    			<img src="toolbar.png" alt="Tool bar buttons"/><br />
-    			<figcaption align="center">
-    				<i><b>Figure 2:</b> The tool bar buttons, with buttons for loading, viewing, navigation, plotting and help</i>
-    			</figcaption>
-    		</figure>
-    	</div>
-    	<br />
-    	It contains buttons in 5 groups, separated by dividers. The <font color="red">first group</font> contains buttons for (from left to right): loading data, Save 
-    	and Save As. The <font color="lime">second group</font> contains buttons to activate tools specific for plots: zooming in and out, panning, data tip and switching the 
-    	legend on and off. The <font color="dodgerblue">third group</font> contains the controls for moving to the first, previous, next and last site within a cell. Navigation of 
-    	events can also be done by using the left and right arrow keys on the keyboard. Switching between cells within a group can be accomplished by using page down (PgDn) and 
-    	page up (PgUp) to go to the next or previous cell, respectively. The keyboard navigation does not loop around: if the last event is displayed, pressing the right arrow key 
-    	will have no effect. The same holds for the cell navigation using the page up and down keys. The <font color="darkorange">fourth group</font> contains the buttons for showing 
-    	the explore detection interface, and buttons for exporting data. Finally, the <font color="fuchsia">fifth group</font> contains a button for the settings, the log viewer and 
-    	the documentation (this file).
-    </p>
-    <br />
-    <a href="#top">Back to top</a>
-    
-    <h3>Condition and cell navigation</h3>
-    <p>
-    	When data is loaded, it is grouped according to the condition in the sheetname. Please note that the condition label is case-sensitive, meaning that <i>WT</i> and 
-    	<i>Wt</i> are different conditions. The condition popup allows the user to select the current condition, with the associated cells that belong to that condition. If 
-    	you wish to modify the condition label in order to correct typos, select <b>Edit | Relabel conditions</b> from the menu. The cell popup menu in the main interface 
-    	allows the user to select a sheet containing the data from that cell. Doing so will update the plots and the table.
-    </p>
-    
-    <h3>Main plots</h3>
-    <p>
-    	The 2 plots show the traces selected in the plot type panel; for single color data, the pHluorin option is the only available option. For dual color data, the default 
-    	option is both channels, with the pHluorin channel in green and the mCherry channel in red. The title of the plot indicates the site number and name (in brackets), and 
-    	the localization after the colon. Fusion events are indicated in the pHluorin channel using colored traingles: a right-pointing one for the onset and a left-pointing one 
-    	for the end of an event. For dual color data, the loss of cargo in the mCherry signal is indicated by an open circle. If field stimulation was used, then the stimulation 
-    	period is indicated by blue bars, while the ammonium period is indicated by a green patch. The bottom plot shows a detail of the currently selected fusion event, and 
-    	can be used to manually adjust the start and end point of the event.
-    </p>
-    
-    <h3>Results table</h3>
-    <p>
-    	The results table shows a quick overview of the results from the current cell. The first 4 rows contain summary data for this cell. when clicking on a row in the table 
-    	that belongs to a specific site, the plots for that site will be shown. It is also possible to remove an event from a cell by unchecking the box in the <i>Keep?</i> 
-    	column. To add the event back into the data set, check the box for that event to re-enable it. To hide all deselected events, uncheck the <b>Show all events?</b> 
-    	checkbox.
-    	The <b>Sort Event</b> button on the top of the table will cluster the traces in three blocks: the undetected ones on top, the slow detected ones as second and the standard 
-    	detected ones as last block.</p>
-    <a href="#top">Back to top</a>
+	
+	<h3>Image navigation</h3>
+	<p>
+	At this point it is possible to inspect the different FOV without loading the timelapses. If the still condition is a multichannel image, the different channels will be shown
+	separately and they are accessibly via the three buttons located below the image.
+	</p>
+	
+	<h2>ROIs Manipulation</h2>
+	<h3>Adding ROIs</h3>
+	<p>
+	Region of interests (ROIs) can be added manually by selecting the <i>"Add ROIs"</i> button locate at the top of the interface. The cursor will show a small crosshair and the ROIs
+	can be added by clicking on either of the two images.
+	<br>Note that even though it is possible to move between different channels while adding ROIs, <b>it is not recommended</b> due to unpredictable behavior of the interface.
+	<br>
+	<br>It is possible to automatically detect the ROIs in one or all the FOV by selecting the <i>"Detect ROIs"</i>. The program will then perform a series of thresholds to identify object based
+	on the first frame of the timelapse until it reaches the approximate number of ROIs as specified by the <i>"ROIs #"</i> in the ROIs Options on the right side of the interface.
+	<br>Note that this functionality is still under development and it is meant as a quick tool to start screening the data, not yet as a final ROI detection.
+	<br>
+	<br>Alternatively, ROIs can be imported from other platform via the <i>"Import ROIs"</i> button. The program will then ask to select a csv file containing the center
 </body>
 </html>

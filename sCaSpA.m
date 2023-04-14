@@ -11,6 +11,7 @@ classdef sCaSpA < matlab.apps.AppBase
         FileMenuExport
         FileMenuDebug
         HelpMenu
+        HelpDocumentation
         HelpMenuShortcuts
         PlotInteractionPanel           matlab.ui.container.Panel
         ShowRawButton                  matlab.ui.control.StateButton
@@ -112,12 +113,17 @@ classdef sCaSpA < matlab.apps.AppBase
         SynchLevelDropDown
         DICZoomLabel
         DICZoomEditField
+        ShowROIsLabelButton
+        ShowPeaksButton
+        ShowRiseDecayButton
+        ShowAsRasterButton
     end
     
     % File storage properties
     properties (Access = public)
         dicT % Table containing the information from the DIC image
         imgT % Table containing the information of the peaks
+        stdT % Table containing only the StDev over time of the movies
         currDIC % The DIC image that is display
         currStak % The stack that is selected
         currCell % The cell that is selected
@@ -145,6 +151,11 @@ classdef sCaSpA < matlab.apps.AppBase
         MaxStepX
         MaxValY % Maximum Y value for the FOV
         isBioFormat
+        plotOptions = struct('AsRaster', false,...
+                             'ROIs', false,...
+                             'Peaks', true,...
+                             'Active', false,...
+                             'RiseDecay', true);
         imgType = 8; % Store if the image is 8-bit or 16-bit
         bWarnings = struct('AddEvents', true,...
                            'RemoveEvents', true,...
@@ -163,11 +174,12 @@ classdef sCaSpA < matlab.apps.AppBase
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
-        dailyBuilt = 3;
+        dailyBuilt = 4;
         % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
         %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
         %                - 230412 = 2 -> Start implementation of Delete ROIs button, improve loading of 16-bit images, improved file extenstion management
         %                - 230413 = 3 -> Fixed changing the movie for multiple recording on the same FOV
+        %                - 230414 = 4 -> Add additional options for the plot
         
     end
     
@@ -318,6 +330,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 close(hWait);
                 app.imgT = cell2table(tempT(2:end,:), 'VariableNames', tempT(1,:));
                 app.imgT.KeepFOV = true(height(app.imgT),1);
+                app.stdT = cell(height(app.imgT),1);
                 % Populate tehe DIC dropdown menu and show the first image
                 app.currDIC = app.dicT.CellID{1};
                 updateDropDownDIC(app);
@@ -390,6 +403,9 @@ classdef sCaSpA < matlab.apps.AppBase
                         uialert(app.UIFigure, 'The table structure was modified to fit in version 1.1', 'Modified structure');
                     end
                 end
+                if ~isfield(networkFiles, 'stdT')
+                    app.stdT = cell(height(app.imgT),1);
+                end
                 close(hWait);
             end
             % Populate tehe DIC dropdown menu and show the first image
@@ -404,7 +420,7 @@ classdef sCaSpA < matlab.apps.AppBase
             if ~isempty(app.imgT.FF0Intensity{1})
                 toggleInteractions(app, 'Detection');
             end
-            if any(matches(app.imgT.Properties.VariableNames, 'SpikeLocations'))
+            if any(matches(app.imgT.Properties.VariableNames, 'SpikeLocations')) && ~isempty(app.imgT.SpikeLocations{1})
                 toggleInteractions(app, 'Quantification');
             end
         end
@@ -421,8 +437,9 @@ classdef sCaSpA < matlab.apps.AppBase
             imgT = app.imgT;
             dicT = app.dicT;
             options = app.options;
+            stdT = app.stdT;
             additional = struct('currDIC', app.currDIC, 'isBioFormat', app.isBioFormat, 'imgType', app.imgType);
-            save(savePath, 'imgT', 'dicT', 'options', 'additional');
+            save(savePath, 'imgT', 'dicT', 'options', 'additional', 'stdT');
             cd(oldDir)
             close(hWait);
             app.bWarnings.SaveFile = false;
@@ -606,6 +623,7 @@ classdef sCaSpA < matlab.apps.AppBase
             if app.ShowMovieButton.Value
                 button.Source.Text = 'Show Movie';
             end
+            app.CellNumberEditField.Value = 1;
             updateDIC(app);
             ShowTimelapseChanged(app, button)
             %updatePlot(app);
@@ -626,6 +644,7 @@ classdef sCaSpA < matlab.apps.AppBase
         end
         
         function ChangeRecordingPressed(app, event)
+            % Move one FOV up or down
             switch event.Source.Text
                 case '>'
                     tempDIC = find(contains(app.DropDownDIC.Items, app.DropDownDIC.Value));
@@ -640,8 +659,10 @@ classdef sCaSpA < matlab.apps.AppBase
                         tempDIC = numel(app.DropDownDIC.Items);
                     end
             end
+            % Change the value of the current DIC to match with the new value
             app.currDIC = app.DropDownDIC.Items(tempDIC);
             app.DropDownDIC.Value = app.DropDownDIC.Items(tempDIC);
+            % Update the list of movies and the interface
             updateDropDownTimelapse(app);
             app.CellNumberEditField.Value = 1;
             updateDIC(app);
@@ -680,8 +701,8 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                     end
                 case 'Show StDev'
+                    % Update the buttons
                     warning('off', 'all');
-                    hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading', 'Message', 'Loading the movie', 'Indeterminate', 'on');
                     app.ShowFrameButton.BackgroundColor = [.96 .96 .96];
                     app.ShowStDevButton.BackgroundColor = app.keepColor(2,:);
                     app.ShowMovieButton.BackgroundColor = [.96 .96 .96];
@@ -690,13 +711,31 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.ShowMovieButton.Enable = 'on';
                     app.ShowFrameButton.Value = 0;
                     app.ShowMovieButton.Value = 0;
+                    % Check when the data was collected, if before 1.2#4 there is most likely no stdT
                     imgIdx = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
-                    fileInfo = app.imgT.ImgProperties(imgIdx,:);
-                    fileInfo(1,4) = app.imgType;
-                    imgStack = loadTiff(app.imgT.Filename{imgIdx}, fileInfo, 0, app.isBioFormat);
-                    tempImg = std(double(imgStack),[],3);
+                    if isempty(app.stdT{imgIdx})
+                        confMessage = {'The standard deviation of the movies is not yet calculated.';'';...
+                            'Do you want to calculate it for all the movies?'};
+                        selection = uiconfirm(app.UIFigure, confMessage, 'Data not loaded', 'Options', {'Yes', 'Only selected'}, 'DefaultOption', 1);
+                        hWait = uiprogressdlg(app.UIFigure, 'Title', 'Loading', 'Message', 'Loading the movie', 'Indeterminate', 'on');
+                        switch selection
+                            case 'Yes'
+                                allIdx = 1:height(app.imgT);
+                            case 'Only selected'
+                                allIdx = find(imgIdx);
+                        end
+                        for idx = allIdx
+                            hWait.Message = sprintf('Loading: %s', app.imgT.CellID{idx});
+                            fileInfo = app.imgT.ImgProperties(idx,:);
+                            fileInfo(1,4) = app.imgType;
+                            imgStack = loadTiff(app.imgT.Filename{idx}, fileInfo, 0, app.isBioFormat);
+                            tempImg = std(double(imgStack),[],3);
+                            app.stdT{idx} = tempImg;
+                        end
+                        close(hWait);
+                    end
+                    tempImg = app.stdT{imgIdx};
                     updateTimelapse(app, 'StDev', tempImg)
-                    close(hWait);
                     warning('on', 'all');
                 case 'Show Movie'
                     uialert(app.UIFigure, sprintf('Showing the movie is not yet implemented, sorry.'), 'No movie yet ):');
@@ -729,6 +768,12 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function ChangedROI(app)
             app.changeROI = true;
+        end
+        
+        function ShowDocumentation(app)
+            guiPath = regexprep(mfilename('fullpath'), [mfilename '$'], '');
+            docFile = fullfile(guiPath, 'doc', 'index.html');
+            web(docFile, '-new')
         end
         
         function ShortcutsHelp(app)
@@ -1620,6 +1665,8 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.UIFigure.Pointer = 'crosshair';
             else
                 app.UIFigure.Pointer = 'arrow';
+                app.ShowROIsLabelButton.Enable = 'on';
+                app.ShowROIsLabelButton.Value = true;
                 updateDIC(app);
             end
             app.bWarnings.SaveFile = true;
@@ -1635,11 +1682,9 @@ classdef sCaSpA < matlab.apps.AppBase
             app.UIAxesDIC.Visible = 'on';
             % Check which image we need to show
             whatDIC = contains(app.dicT.CellID, app.currDIC);
-            cellRoi = [];
-            showC = str2double(app.DICChannels.SelectedObject.Text(end));
             if sum(whatDIC) == 1
                 dicImg = app.dicT.RawImage{whatDIC};
-                imagesc(dicImg(:,:,showC), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
+                imagesc(dicImg(:,:,str2double(app.DICChannels.SelectedObject.Text(end))), 'Parent', app.UIAxesDIC, 'HitTest', 'off');
                 colormap(app.UIAxesDIC, gray)
             else
                 dicFile = app.dicT.Filename(contains(app.dicT.Filename, app.currDIC));
@@ -1647,10 +1692,30 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             app.UIAxesDIC.XLim = [0 size(dicImg, 1)]; app.UIAxesDIC.XTick = [];
             app.UIAxesDIC.YLim = [0 size(dicImg, 2)]; app.UIAxesDIC.YTick = [];
+            % Check if there is data to plot
             if ~isempty(app.dicT.RoiSet{whatDIC})
                 modifyROIs(app, 'Modify');
+                % Check if there are labeled ROIs, and in case give the options to show them in the plot
+                if any(app.dicT.LabeledROIs{whatDIC})
+                    app.ShowROIsLabelButton.Enable = 'on';
+                else
+                    app.ShowROIsLabelButton.Enable = 'off';
+                    app.ShowROIsLabelButton.Value = false;
+                end
+                % Check if there are peaks and quantifications
+                whatMovie = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
+                app.ShowRawButton.Value = false;
+                app.ShowPeaksButton.Value = false;
+                app.ShowRiseDecayButton.Value = false;
+                if ~isempty(app.imgT.SpikeLocations{whatMovie})
+                    app.ShowRawButton.Value = true;
+                    app.ShowPeaksButton.Value = true;
+                end
+                if any(matches(app.imgT.Properties.VariableNames, 'SpikeProperties')) && ~isempty(app.imgT.SpikeProperties{whatMovie})
+                    app.ShowRiseDecayButton.Value = true;
+                end
+                ChangePlotOptions(app);
                 updatePlot(app);
-                %cla(app.UIAxesPlot);
             else
                 app.patchMask = [];
                 cla(app.UIAxesPlot);
@@ -1752,7 +1817,6 @@ classdef sCaSpA < matlab.apps.AppBase
         
         function updatePlot(app, varargin)
             axPlot = app.UIAxesPlot;
-            bSpikes = true;
             if nargin > 1
                 axPlot = varargin{find(strcmpi(varargin, 'Axes'))+1};
                 bSpikes = varargin{find(strcmpi(varargin, 'bSpikes'))+1};
@@ -1769,14 +1833,16 @@ classdef sCaSpA < matlab.apps.AppBase
                         hold(axPlot, 'on')
                         legend(axPlot, 'off');
                         % Before plotting anything, check if we need to filter trace in or out
-                        if app.ShowRawButton.Value
+                        if app.plotOptions.Active
                             tempFltr = app.imgT.KeepROI{tempCell};
                             tempData = tempData(tempFltr,:);
                         end
-                        if ~any(app.dicT.LabeledROIs{tempDIC})
+                        if app.plotOptions.AsRaster
+                            tempData = tempData + repmat((0:size(tempData,1)-1)'*0.1,1,size(tempData,2));
+                        end
+                        if ~app.plotOptions.ROIs
                             hLeg(1) = plot(axPlot, time, tempData(1,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
                             plot(axPlot, time, tempData(2:end,:), 'Color', [.7 .7 .7], 'HitTest', 'off', 'ButtonDownFcn', '');
-                            hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
                         else
                             cmap = [.7 .7 .7; .2 .2 .7];
                             labelRoi = app.dicT.LabeledROIs{tempDIC}+1;
@@ -1785,10 +1851,12 @@ classdef sCaSpA < matlab.apps.AppBase
                             for p=2:size(tempData,1)-1
                                 plot(axPlot, time, tempData(p,:), 'Color', labelColor(p,:), 'HitTest', 'off', 'ButtonDownFcn', '');
                             end
+                        end
+                        if ~app.plotOptions.AsRaster
                             hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
                         end
                         axPlot.XLim = [time(1) time(end)];
-                        if ~isempty(app.imgT.SpikeLocations{tempCell}) && bSpikes
+                        if app.plotOptions.Peaks
                             spikeLoc = app.imgT.SpikeLocations{tempCell};
                             if app.ShowRawButton.Value
                                 spikeLoc = spikeLoc(tempFltr,:);
@@ -1804,13 +1872,15 @@ classdef sCaSpA < matlab.apps.AppBase
                                 end
                             end
                         end
-                        legend(axPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
+                        if ~app.plotOptions.AsRaster
+                            legend(axPlot, hLeg, {'All' 'Mean'}, 'Location', 'best', 'box', 'off')
+                        end
                     otherwise
                         % plot one trace and the identified spikes
                         cellN = app.CellNumberEditField.Value;
                         hold(axPlot, 'off')
                         legend(axPlot, 'off');
-                        if any(contains(app.imgT.Properties.VariableNames, 'SpikeProperties')) && ~isempty(app.imgT.SpikeProperties{tempCell}) && bSpikes
+                        if app.plotOptions.RiseDecay
                             % Get the start and ends of the events
                             evStart = app.imgT.SpikeProperties{tempCell}{cellN,9}(2,:);
                             evEnd = app.imgT.SpikeProperties{tempCell}{cellN,10}(2,:);
@@ -1831,7 +1901,7 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                         plot(axPlot, time, tempData(cellN,:), 'Color', 'k', 'HitTest', 'off', 'ButtonDownFcn', '');
                         hold(axPlot, 'on')
-                        if ~isempty(app.imgT.SpikeLocations{tempCell}) && bSpikes
+                        if app.plotOptions.Peaks
                             spikeLoc = app.imgT.SpikeLocations{tempCell}{cellN};
                             spikeInt = tempData(cellN, round(spikeLoc*Fs)+1);
                             % spikeInt = app.imgT.SpikeIntensities{imgID}{cellN};
@@ -1859,6 +1929,11 @@ classdef sCaSpA < matlab.apps.AppBase
                         FixYAxis(app);
                     end
                     axPlot.YLim = app.MaxValY;
+                end
+                if app.plotOptions.AsRaster
+                    axPlot.YLim = [min(tempData, [], 'all') max(tempData, [], 'all')];
+                else
+                    app.UIAxesPlot.YLimMode = 'auto';
                 end
                 if ~app.ZoomXButton.Value
                     app.MaxStepX = axPlot.XLim(2);
@@ -2081,6 +2156,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.KeepPointButton.Enable = 'on';
                     app.LabelROIsButton.Enable = 'on';
                     app.ExporttraceButton.Enable = 'on';
+                    app.ShowAsRasterButton.Enable = 'on';
                 case 'SinglePlot'
                     app.SaveDataButton.Enable = 'on';
                     app.ButtonNextCell.Enable = 'on';
@@ -2089,6 +2165,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.AddPeakButton.Enable = 'on';
                     app.RemovePeakButton.Enable = 'on';
                     app.KeepTraceButton.Enable = 'on';
+                    app.ShowRiseDecayButton.Enable = 'on';
                 case 'MeanPlot'
                     app.SaveDataButton.Enable = 'on';
                     app.ButtonNextCell.Enable = 'off';
@@ -2097,6 +2174,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.AddPeakButton.Enable = 'off';
                     app.RemovePeakButton.Enable = 'off';
                     app.KeepTraceButton.Enable = 'off';
+                    app.ShowRiseDecayButton.Enable = 'off';
                 case 'Quantification'
                     app.SaveDataButton.Enable = 'on';
                     app.QuantifyButton.Enable = 'on';
@@ -2106,6 +2184,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.FileMenuExport.Enable = 'on';
                     app.ShowRawButton.Enable = 'on';
                     app.ExporttraceButton.Enable = 'on';
+                    app.ShowPeaksButton.Enable = 'on';
             end
         end
         
@@ -2207,6 +2286,9 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT(imgFltr(i), 'FF0Intensity') = {deltaff0Ints};
                 app.imgT(imgFltr(i), 'DetrendData') = {deltaff0Ints};
                 app.imgT(imgFltr(i), 'KeepROI') = {false(size(tempRoi,1),1)};
+                % Since we already loaded the data anyway, save the StdDev
+                tempImg = std(double(imgData),[],3);
+                app.stdT{tempDIC} = tempImg;
                 loadTime = toc;
             end
             if nargin < 3
@@ -2311,6 +2393,16 @@ classdef sCaSpA < matlab.apps.AppBase
             app.DetrendingMethodDropDown.Value = app.options.Detrending;
             app.DetrendWindowfrEditField.Value = app.options.DetrendSize;
         end
+        
+        function ChangePlotOptions(app)
+            app.plotOptions.AsRaster = app.ShowAsRasterButton.Value;
+            app.plotOptions.ROIs = app.ShowROIsLabelButton.Value;
+            app.plotOptions.Peaks = app.ShowPeaksButton.Value;
+            app.plotOptions.Active = app.ShowRawButton.Value;
+            app.plotOptions.RiseDecay = app.ShowRiseDecayButton.Value;
+            updatePlot(app);
+            figure(app.UIFigure);
+        end
     end
     
     % Component initialization
@@ -2337,6 +2429,8 @@ classdef sCaSpA < matlab.apps.AppBase
             app.FileMenuDebug = uimenu(app.FileMenu, 'Text', 'Debug', 'Separator', 'on',...
                 'MenuSelectedFcn', createCallbackFcn(app, @OptionMenuDebugSelected, false));
             app.HelpMenu = uimenu(app.UIFigure, 'Text', 'Help');
+            app.HelpDocumentation = uimenu(app.HelpMenu, 'Text', 'Documentation',...
+                'MenuSelectedFcn', createCallbackFcn(app, @ShowDocumentation, false));
             app.HelpMenuShortcuts = uimenu(app.HelpMenu, 'Text', 'Shortcuts',...
                 'MenuSelectedFcn', createCallbackFcn(app, @ShortcutsHelp, false));
             % Create image interaction panels
@@ -2479,7 +2573,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.ButtonPreviousCell = uibutton(app.PlotInteractionPanel, 'push', 'Position', [213 40 25 22], 'Text', '-', 'Enable', 'off',...
                 'ButtonPushedFcn', createCallbackFcn(app, @changePlotTrace, true));
             app.ShowRawButton = uibutton(app.PlotInteractionPanel, 'state', 'Position', [348 40 100 22], 'Text', 'Show active', 'Enable', 'off',...
-                'ValueChangedFcn', createCallbackFcn(app, @showRawPressed, false));
+                'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
             app.LabelPeakButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [136 8 100 22], 'Text', 'Label Peak', 'Enable', 'off');
             app.LabelFeatButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [243 8 100 22], 'Text', 'Label Feat.', 'Enable', 'off');
             app.ExporttraceButton = uibutton(app.PlotInteractionPanel, 'push', 'Position', [348 8 100 22], 'Text', 'Export trace', 'Enable', 'off',...
@@ -2500,6 +2594,14 @@ classdef sCaSpA < matlab.apps.AppBase
             app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 138 100 22], 'Value', '25%');
             app.SynchLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 107 100 22], 'Text', 'Synch level');
             app.SynchLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 107 100 22], 'Value', '90%');
+            app.ShowROIsLabelButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show ROIs Label', 'Position', [218 169 100 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
+            app.ShowPeaksButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show Peaks', 'Position', [218 138 100 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
+            app.ShowRiseDecayButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show Rise/Decay', 'Position', [218 107 100 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
+            app.ShowAsRasterButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show as Raster', 'Position', [218 76 100 22], 'Enable', 'off',...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
