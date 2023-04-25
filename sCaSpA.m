@@ -124,6 +124,7 @@ classdef sCaSpA < matlab.apps.AppBase
         dicT % Table containing the information from the DIC image
         imgT % Table containing the information of the peaks
         stdT % Table containing only the StDev over time of the movies
+        phiT % Table to store the correlation matrix
         currDIC % The DIC image that is display
         currStak % The stack that is selected
         currCell % The cell that is selected
@@ -159,7 +160,8 @@ classdef sCaSpA < matlab.apps.AppBase
         imgType = 8; % Store if the image is 8-bit or 16-bit
         bWarnings = struct('AddEvents', true,...
                            'RemoveEvents', true,...
-                           'SaveFile', false);
+                           'SaveFile', false,...
+                           'LoadSingle', true);
         keepColor = [219 68 55;...      % Google RED
                     15 157 88;...       % Google GREEN
                     66 133 244;...      % Google BLUE
@@ -170,16 +172,18 @@ classdef sCaSpA < matlab.apps.AppBase
     properties (Access = private)
         majVer = 1;
         % major versions - 230228 = 1 -> finish build the main interface, it will guide the user to the main steps of the analysis
-        minVer = 2;
+        minVer = 3;
         % minor versions - 230228 = 0 -> basic functionality implemented
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
-        dailyBuilt = 4;
+        %                - 230425 = 3 -> Start implementation for cell clustering and out of network analysis
+        dailyBuilt = 0;
         % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
         %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
         %                - 230412 = 2 -> Start implementation of Delete ROIs button, improve loading of 16-bit images, improved file extenstion management
         %                - 230413 = 3 -> Fixed changing the movie for multiple recording on the same FOV
         %                - 230414 = 4 -> Add additional options for the plot
+        %                - 230425 = 0 -> Several bug fixes and new implementations
         
     end
     
@@ -394,17 +398,28 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                         app.imgT = [app.imgT; networkFiles.imgT];
                     end
-                    % Update based on the version
-                    if ~isfield(networkFiles, 'options') || ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.1
-                        app.imgT.KeepFOV = true(height(app.imgT),1);
-                        app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
-                        app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
-                        app.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
-                        uialert(app.UIFigure, 'The table structure was modified to fit in version 1.1', 'Modified structure');
-                    end
                 end
-                if ~isfield(networkFiles, 'stdT')
-                    app.stdT = cell(height(app.imgT),1);
+                if isfield(networkFiles, 'stdT')
+                    app.stdT = networkFiles.stdT;
+                end
+                if isfield(networkFiles, 'phiT')
+                    app.phiT = networkFiles.phiT;
+                end
+                % Update based on the version
+                if ~isfield(networkFiles, 'options') || ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.3
+                    app.imgT.KeepFOV = true(height(app.imgT),1);
+                    app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                    app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
+                    if ~any(contains(app.dicT.Properties.VariableNames, 'LabeledROIs'))
+                        app.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                    end
+                    if ~isfield(networkFiles, 'stdT')
+                        app.stdT = cell(height(app.imgT),1);
+                    end
+                    if ~isfield(networkFiles, 'phiT')
+                        app.phiT = cell(height(app.imgT),2);
+                    end
+                    uialert(app.UIFigure, 'The table structure was modified to fit in version 1.3', 'Modified structure', 'icon', 'info');
                 end
                 close(hWait);
             end
@@ -438,8 +453,9 @@ classdef sCaSpA < matlab.apps.AppBase
             dicT = app.dicT;
             options = app.options;
             stdT = app.stdT;
+            phiT = app.phiT;
             additional = struct('currDIC', app.currDIC, 'isBioFormat', app.isBioFormat, 'imgType', app.imgType);
-            save(savePath, 'imgT', 'dicT', 'options', 'additional', 'stdT');
+            save(savePath, 'imgT', 'dicT', 'options', 'additional', 'stdT', 'phiT');
             cd(oldDir)
             close(hWait);
             app.bWarnings.SaveFile = false;
@@ -583,7 +599,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.options.DetectTrace = app.TraceToUseDropDown.Value;
             app.options.Registration = app.RegistrationCheckBox.Value;
             app.options.Reference = app.ReferenceConditionEditField.Value;
-            if ~strcmp(app.options.Detrending, app.DetrendingMethodDropDown.Value) || (app.options.DetrendSize ~= app.DetrendWindowfrEditField.Value)
+            if contains(event.Source.Parent.Title, 'Detrend')
                 app.options.Detrending = app.DetrendingMethodDropDown.Value;
                 app.options.DetrendSize = app.DetrendWindowfrEditField.Value;
                 detrendData(app);
@@ -800,9 +816,17 @@ classdef sCaSpA < matlab.apps.AppBase
                     % Zoom in
                     zoomPoint = round(event.IntersectionPoint);
                     xMin = max(0, zoomPoint(1) - zoomF);
-                    xMax = min(size(app.dicT.RawImage{1},1), xMin + zoomF*2);
+                    xMax = xMin + zoomF*2;
+                    if xMax > size(app.dicT.RawImage{1},1)
+                        xMax = size(app.dicT.RawImage{1},1);
+                        xMin = xMax - zoomF*2;
+                    end
                     yMin = max(0, zoomPoint(2) - zoomF);
-                    yMax = min(size(app.dicT.RawImage{1},1), yMin + zoomF*2);
+                    yMax = yMin + zoomF*2;
+                    if yMax > size(app.dicT.RawImage{1},1)
+                        yMax = size(app.dicT.RawImage{1},1);
+                        yMin = yMax - zoomF*2;
+                    end
                     app.UIAxesDIC.XLim = [xMin xMax];
                     app.UIAxesDIC.YLim = [yMin yMax];
                     app.UIAxesMovie.XLim = [xMin xMax];
@@ -853,9 +877,11 @@ classdef sCaSpA < matlab.apps.AppBase
                 currRoi = [allRois - app.options.RoiSize allRois + app.options.RoiSize];
                 selRoi = round(event.IntersectionPoint(1:2));
                 fltr = find((currRoi(:,1) < selRoi(1) & currRoi(:,3) > selRoi(1)) & (currRoi(:,2) < selRoi(2) & currRoi(:,4) > selRoi(2)));
-                app.dicT.LabeledROIs{tempDIC}(fltr) = ~app.dicT.LabeledROIs{tempDIC}(fltr);
-                % Show the change
-                app.patchMask(fltr).EdgeColor = app.keepColor(2,:);
+                if ~isempty(fltr)
+                    app.dicT.LabeledROIs{tempDIC}(fltr) = ~app.dicT.LabeledROIs{tempDIC}(fltr);
+                    % Show the change
+                    app.patchMask(fltr).EdgeColor = app.keepColor(2,:);
+                end
             end
             % Delete ROIs
             if app.DeleteROIsButton.Value
@@ -906,15 +932,19 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             hWait = uiprogressdlg(app.UIFigure, 'Message', 'Detecting ROIs', 'Title', 'Detecting ROIs', 'Indeterminate', 'on');
             for idx = imgIdx
-                hWait.Message = sprintf('Detecting ROIs in: %s', app.imgT.CellID{idx});
-                % First the image and do some filtering
-                if app.isBioFormat
-                    % Read only the first image of the nd2 file
-                    reader = bfGetReader(app.imgT.Filename{idx});
-                    img = bfGetPlane(reader, 1);
+                % Check if there is already a StDev image, if not ask what to use
+                if ~isempty(app.stdT{idx})
+                    img = app.stdT{idx};
                 else
-                    img = imread(app.imgT.Filename{idx});
+                    if app.isBioFormat
+                        % Read only the first image of the nd2 file
+                        reader = bfGetReader(app.imgT.Filename{idx});
+                        img = bfGetPlane(reader, 1);
+                    else
+                        img = imread(app.imgT.Filename{idx});
+                    end
                 end
+                hWait.Message = sprintf('Detecting ROIs in: %s', app.imgT.CellID{idx});
                 gaussImg = imgaussfilt(img, app.options.RoiSize*4);
                 gaussImg = imgaussfilt(img-gaussImg,1);
                 % Perform a multilevel threshold
@@ -934,12 +964,6 @@ classdef sCaSpA < matlab.apps.AppBase
                         nIter = 0;
                     end
                 end
-%                 thrValues = multithresh(gaussImg, 2);
-%                 if height(roiProp) > app.options.ExpectedRoi * 2.5
-%                     thrFltr = imquantize(gaussImg, thrValues) == 3;
-%                     bwImg = bwareaopen(thrFltr, app.options.RoiSize^2, 8);
-%                     roiProp = regionprops('table', bwImg, 'basic');
-%                 end
                 % Add the regions to the dicT
                 if height(roiProp) >= 1
                     app.dicT.RoiSet{idx} = round(roiProp.Centroid);
@@ -957,7 +981,9 @@ classdef sCaSpA < matlab.apps.AppBase
             switch howTo
                 case 'Add ROIs'
                     % Load the image and calculate the FF0 on the ROIs
-                    getIntensity(app)
+                    if app.bWarnings.LoadSingle
+                        getIntensity(app)
+                    end
                     % Show the ROIs with colors, and in the timelapse image
                     nRoi = numel(app.patchMask);
                     for r = 1:nRoi
@@ -1077,21 +1103,33 @@ classdef sCaSpA < matlab.apps.AppBase
                 spikeMinLeng = app.options.PeakMinDuration / Fs;
                 spikeMaxLeng = app.options.PeakMaxDuration / Fs;
                 % Select the threshold method
+                bThr = true;
                 switch app.options.PeakMinHeight
                     case 'MAD'
                         spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr;
                     case 'Normalized MAD'
                         spikeThr = median(useData,2) + mad(useData,0,2) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
-                    case 'Rolling StDev'
+                    case 'Rolling St. Dev.'
                         winSize = spikeMaxLeng + spikeDist;
                         tempMean = movmean(useData, winSize, 2);
                         tempStDev = std(diff(useData,[],2),[],2);
                         spikeThr = tempMean + (app.options.SigmaThr*tempStDev);
+                        bThr = false;
                 end
                 % Use the find peak to detect the events
                 for trace = 1:nTraces
+                    if bThr
                     [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}, peakProm] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
                         'MinPeakHeight', spikeThr(trace), 'MinPeakProminence', spikeProm, 'MinPeakWidth', spikeMinLeng, 'MaxPeakWidth', spikeMaxLeng);
+                    else
+                        [spikeInts{trace,1}, spikeLocs{trace,1}, spikeWidths{trace,1}, peakProm] = findpeaks(useData(trace,:), Fs, 'MinPeakDistance', spikeDist, ...
+                            'MinPeakProminence', spikeProm, 'MinPeakWidth', spikeMinLeng, 'MaxPeakWidth', spikeMaxLeng);
+                        thrFltr = spikeInts{trace,1} >= spikeThr(round(spikeLocs{trace,1}*Fs));
+                        spikeInts{trace,1} = spikeInts{trace,1}(thrFltr);
+                        spikeLocs{trace,1} = spikeLocs{trace,1}(thrFltr);
+                        spikeWidths{trace,1} = spikeWidths{trace,1}(thrFltr);
+                        peakProm = peakProm(thrFltr);
+                    end
                     if ~isempty(peakProm)
                         noise = std(diff(useData(trace,:)));
                         fltr = peakProm > 2* noise;
@@ -1351,9 +1389,33 @@ classdef sCaSpA < matlab.apps.AppBase
                 smoothWindow = smoothWindow / sum(smoothWindow);
                 networkRaster = filter(smoothWindow, 1, networkRaster);
                 % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
-                networkPeaks = findpeaks(networkRaster, Fs, 'MinPeakProminence', 2.5);
+                [networkPeaks, networkLocs] = findpeaks(networkRaster, Fs, 'MinPeakProminence', 2.5);
                 netThreshold = floor(sum(cellFreq>0) * (app.NetworkThresholdLabelEditField.Value / 100));
                 networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
+                % Calculate the number of spikes outside the network activity
+                networkLocs = ceil(networkLocs * Fs);
+                spikeFilter = cell(nCell,1);
+                for c = 1:nCell
+                    sStart = spikeRise{c}(basedRaster,:);
+                    sEnd = spikeDecay{c}(basedRaster,:);
+                    for s = 1:numel(sStart)
+                        for ns = 1:numel(networkLocs)
+                            isNetwork = sStart(s) <= networkLocs(ns) & sEnd(s) >= networkLocs(ns);
+                            if isNetwork
+                                spikeFilter{c}(s) = 1;
+                                break
+                            else
+                                spikeFilter{c}(s) = 0;
+                            end
+                                
+                        end
+                    end
+                end
+                spikesInNetwork = cellfun(@sum, spikeFilter);
+                spikesOutNetwork = cellfun(@numel, tempLoc) - spikesInNetwork;
+                spikeIsolated = spikesOutNetwork ./ (spikesInNetwork+spikesOutNetwork) * 100;
+                spikeFltr = logical(cell2mat(spikeFilter'));
+                intIsolated = tempInt(spikeFltr);
                 % Calculate the average synchronicity (based on the 90% duration)
                 rasterDuration = tempRastPeak;
                 rasterDuration(~isnan(rasterDuration)) = 1;
@@ -1361,6 +1423,10 @@ classdef sCaSpA < matlab.apps.AppBase
                 rasterDuration = sum(rasterDuration);
                 rasterDuration = filter(smoothWindow, 1, rasterDuration);
                 syncPeaks = findpeaks(rasterDuration, Fs, 'MinPeakProminence', 2.5);
+                % Test: calculate the correlation based on the phase synchronization PMID: 21994056
+                [phaseMatrix, phaseClusters] = phaseCorrelation(tempData, tempLoc);
+                app.phiT{idx,1} = phaseMatrix;
+                app.phiT{idx,2} = phaseClusters;
                 % Check if there is a label for the ROIs
                 bLabel = false;
                 if any(cell2mat(app.dicT.LabeledROIs))
@@ -1369,12 +1435,15 @@ classdef sCaSpA < matlab.apps.AppBase
                     ISI = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
                     sp = spikeProperties;
                     tInt = app.imgT.SpikeIntensities{idx};
+                    positiveIsolated = spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr));
+                    negativeIsolated = spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr));
                 end
                 % Add the data according to where it needed to be detected
                 app.imgT.SpikeProperties{idx} = [spikeProperties, spikeRise, spikeDecay];
                 app.imgT.SpikeRaster{idx} = tempRastPeak;
                 app.imgT.FWHMRaster{idx} = tempRast;
                 app.imgT.NetworkRaster{idx} = networkRaster;
+                app.imgT.SpikeInOut{idx} = [cellfun(@numel, tempLoc), spikesInNetwork, spikesOutNetwork];
                 app.imgT.CellFrequency{idx} = cellFreq;
                 app.imgT.NetworkFrequency(idx) = networkFreq;
                 app.imgT.SilentCells(idx) = silentCells;
@@ -1383,6 +1452,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0), 'omitnan');
                 app.imgT.MeanInterSpikeInterval(idx) = mean(interSpikeInterval, 'omitnan');
                 app.imgT.MeanSynchronicity(idx) = mean(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
+                app.imgT.MeanIsolated(idx) = mean(spikeIsolated, 'omitnan');
                 app.imgT.MeanTimeToRise(idx) = mean(spikeProperties(1,:), 'omitnan');
                 app.imgT.MeanDuration25(idx) = mean(spikeProperties(2,:), 'omitnan');
                 app.imgT.MeanDuration50(idx) = mean(spikeProperties(3,:), 'omitnan');
@@ -1392,11 +1462,14 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MeanProminence(idx) = mean(spikeProperties(6,:), 'omitnan');
                 app.imgT.MeanTimeToDecay(idx) = mean(spikeProperties(7,:), 'omitnan');
                 app.imgT.MeanDecayTau(idx) = mean(spikeProperties(8,:), 'omitnan');
+                app.imgT.MeanIntensityIsolated(idx) = mean(intIsolated, 'omitnan');
                 if bLabel
                     app.imgT.MeanFrequencyPositive(idx) = mean(cellFreq(labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.MeanFrequencyNegative(idx) = mean(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.MeanISIPositive(idx) = mean(cell2mat(ISI(labelFltr)'), 'omitnan');
                     app.imgT.MeanISINegative(idx) = mean(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                    app.imgT.MeanIsolatedPositive(idx) = mean(positiveIsolated, 'omitnan');
+                    app.imgT.MeanIsolatedNegative(idx) = mean(negativeIsolated, 'omitnan');
                     app.imgT.MeanTimeToRisePositive(idx) = mean(cell2mat(sp(labelFltr,1)'), 'omitnan');
                     app.imgT.MeanTimeToRiseNegative(idx) = mean(cell2mat(sp(~labelFltr,1)'), 'omitnan');
                     app.imgT.MeanDuration25Positive(idx) = mean(cell2mat(sp(labelFltr,2)'), 'omitnan');
@@ -1420,6 +1493,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0), 'omitnan');
                 app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval, 'omitnan');
                 app.imgT.MedianSynchronicity(idx) = median(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
+                app.imgT.MedianIsolated(idx) = median(spikeIsolated, 'omitnan');
                 app.imgT.MedianTimeToRise(idx) = median(spikeProperties(1,:), 'omitnan');
                 app.imgT.MedianDuration25(idx) = median(spikeProperties(2,:), 'omitnan');
                 app.imgT.MedianDuration50(idx) = median(spikeProperties(3,:), 'omitnan');
@@ -1429,11 +1503,14 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.MedianProminence(idx) = median(spikeProperties(6,:), 'omitnan');
                 app.imgT.MedianTimeToDecay(idx) = median(spikeProperties(7,:), 'omitnan');
                 app.imgT.MedianDecayTau(idx) = median(spikeProperties(8,:), 'omitnan');
+                app.imgT.MedianIntensityIsolated(idx) = median(intIsolated, 'omitnan');
                 if bLabel
                     app.imgT.MedianFrequencyPositive(idx) = median(cellFreq(labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.MedianFrequencyNegative(idx) = median(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.MedianISIPositive(idx) = median(cell2mat(ISI(labelFltr)'), 'omitnan');
                     app.imgT.MedianISINegative(idx) = median(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                    app.imgT.MedianIsolatedPositive(idx) = median(positiveIsolated, 'omitnan');
+                    app.imgT.MedianIsolatedNegative(idx) = median(negativeIsolated, 'omitnan');
                     app.imgT.MedianTimeToRisePositive(idx) = median(cell2mat(sp(labelFltr,1)'), 'omitnan');
                     app.imgT.MedianTimeToRiseNegative(idx) = median(cell2mat(sp(~labelFltr,1)'), 'omitnan');
                     app.imgT.MedianDuration25Positive(idx) = median(cell2mat(sp(labelFltr,2)'), 'omitnan');
@@ -1457,6 +1534,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0), 'omitnan') / mean(cellFreq(cellFreq>0), 'omitnan');
                 app.imgT.CoVInterSpikeInterval(idx) = std(interSpikeInterval, 'omitnan') / mean(interSpikeInterval, 'omitnan');
                 app.imgT.CoVSynchronicity(idx) = std(syncPeaks, 'omitnan') / mean(syncPeaks, 'omitnan');
+                app.imgT.CoVIsolated(idx) = std(spikeIsolated, 'omitnan') / mean(spikeIsolated, 'omitnan');
                 app.imgT.CoVTimeToRise(idx) = std(spikeProperties(1,:), 'omitnan') / mean(spikeProperties(1,:), 'omitnan');
                 app.imgT.CoVDuration25(idx) = std(spikeProperties(2,:), 'omitnan') / mean(spikeProperties(2,:), 'omitnan');
                 app.imgT.CoVDuration50(idx) = std(spikeProperties(3,:), 'omitnan') / mean(spikeProperties(3,:), 'omitnan');
@@ -1466,10 +1544,12 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.CoVProminence(idx) = std(spikeProperties(6,:), 'omitnan') / mean(spikeProperties(6,:), 'omitnan');
                 app.imgT.CoVTimeToDecay(idx) = std(spikeProperties(7,:), 'omitnan') / mean(spikeProperties(7,:), 'omitnan');
                 app.imgT.CoVDecayTau(idx) = std(spikeProperties(8,:), 'omitnan') / mean(spikeProperties(8,:), 'omitnan');
+                app.imgT.CoVIntensityIsolated(idx) = std(intIsolated, 'omitnan') / mean(intIsolated, 'omitnan');
                 % Add the descriptors: Quantile coefficient of dispersion
                 app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));              
                 app.imgT.QCDInterSpikeInterval(idx) = qcd(interSpikeInterval);
                 app.imgT.QCDSynchronicity(idx) = qcd(syncPeaks);
+                app.imgT.QCDIsolated(idx) = qcd(spikeIsolated);
                 app.imgT.QCDTimeToRise(idx) = qcd(spikeProperties(1,:));
                 app.imgT.QCDDuration25(idx) = qcd(spikeProperties(2,:));
                 app.imgT.QCDDuration50(idx) = qcd(spikeProperties(3,:));
@@ -1479,11 +1559,14 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.QCDProminence(idx) = qcd(spikeProperties(6,:));
                 app.imgT.QCDTimeToDecay(idx) = qcd(spikeProperties(7,:));
                 app.imgT.QCDDecayTau(idx) = qcd(spikeProperties(8,:));
+                app.imgT.QCDIntensityIsolated(idx) = qcd(intIsolated);
                 if bLabel
                     app.imgT.QCDFrequencyPositive(idx) = qcd(cellFreq(labelFltr & cellFreq>0));
                     app.imgT.QCDFrequencyNegative(idx) = qcd(cellFreq(~labelFltr & cellFreq>0));
                     app.imgT.QCDISIPositive(idx) = qcd(cell2mat(ISI(labelFltr)'));
                     app.imgT.QCDISINegative(idx) = qcd(cell2mat(ISI(~labelFltr)'));
+                    app.imgT.QCDIsolatedPositive(idx) = qcd(positiveIsolated);
+                    app.imgT.QCDIsolatedNegative(idx) = qcd(negativeIsolated);
                     app.imgT.QCDTimeToRisePositive(idx) = qcd(cell2mat(sp(labelFltr,1)'));
                     app.imgT.QCDTimeToRiseNegative(idx) = qcd(cell2mat(sp(~labelFltr,1)'));
                     app.imgT.QCDDuration25Positive(idx) = qcd(cell2mat(sp(labelFltr,2)'));
@@ -1507,6 +1590,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.VarianceFrequency(idx) = var(cellFreq(cellFreq>0), 'omitnan');              
                 app.imgT.VarianceInterSpikeInterval(idx) = var(interSpikeInterval, 'omitnan');
                 app.imgT.VarianceSynchronicity(idx) = var(syncPeaks, 'omitnan');
+                app.imgT.VarianceIsolated(idx) = var(spikeIsolated, 'omitnan');
                 app.imgT.VarianceTimeToRise(idx) = var(spikeProperties(1,:), 'omitnan');
                 app.imgT.VarianceDuration25(idx) = var(spikeProperties(2,:), 'omitnan');
                 app.imgT.VarianceDuration50(idx) = var(spikeProperties(3,:), 'omitnan');
@@ -1516,11 +1600,16 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.imgT.VarianceProminence(idx) = var(spikeProperties(6,:), 'omitnan');
                 app.imgT.VarianceTimeToDecay(idx) = var(spikeProperties(7,:), 'omitnan');
                 app.imgT.VarianceDecayTau(idx) = var(spikeProperties(8,:), 'omitnan');
+                app.imgT.VarianceIntensityIsolated(idx) = var(intIsolated, 'omitnan');
                 if bLabel
                     app.imgT.VarianceFrequencyPositive(idx) = var(cellFreq(labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.VarianceFrequencyNegative(idx) = var(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
                     app.imgT.VarianceISIPositive(idx) = var(cell2mat(ISI(labelFltr)'), 'omitnan');
                     app.imgT.VarianceISINegative(idx) = var(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                    app.imgT.VarianceIsolatedPositive(idx) = var(positiveIsolated);
+                    app.imgT.VarianceIsolatedNegative(idx) = var(negativeIsolated);
+                    app.imgT.VarianceIsolatedPositive(idx) = var(spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr)), 'omitnan');
+                    app.imgT.VarianceIsolatedNegative(idx) = var(spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr)), 'omitnan');
                     app.imgT.VarianceTimeToRisePositive(idx) = var(cell2mat(sp(labelFltr,1)'), 'omitnan');
                     app.imgT.VarianceTimeToRiseNegative(idx) = var(cell2mat(sp(~labelFltr,1)'), 'omitnan');
                     app.imgT.VarianceDuration25Positive(idx) = var(cell2mat(sp(labelFltr,2)'), 'omitnan');
@@ -1708,7 +1797,6 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.ShowPeaksButton.Value = false;
                 app.ShowRiseDecayButton.Value = false;
                 if ~isempty(app.imgT.SpikeLocations{whatMovie})
-                    app.ShowRawButton.Value = true;
                     app.ShowPeaksButton.Value = true;
                 end
                 if any(matches(app.imgT.Properties.VariableNames, 'SpikeProperties')) && ~isempty(app.imgT.SpikeProperties{whatMovie})
@@ -1757,8 +1845,10 @@ classdef sCaSpA < matlab.apps.AppBase
                     else
                         app.KeepTraceButton.BackgroundColor = app.keepColor(2,:);
                     end
+                    app.FixYAxisButton.Value = all(app.FixYAxisButton.BackgroundColor == app.keepColor(3,:));
                 otherwise
                     toggleInteractions(app, 'MeanPlot')
+                    app.FixYAxisButton.Value = false;
             end
             updatePlot(app)
             figure(app.UIFigure);
@@ -1819,7 +1909,6 @@ classdef sCaSpA < matlab.apps.AppBase
             axPlot = app.UIAxesPlot;
             if nargin > 1
                 axPlot = varargin{find(strcmpi(varargin, 'Axes'))+1};
-                bSpikes = varargin{find(strcmpi(varargin, 'bSpikes'))+1};
             end
             tempCell = contains(app.imgT.CellID, app.DropDownTimelapse.Value);
             tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
@@ -1827,6 +1916,12 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempData = app.imgT.DetrendData{tempCell};
                 Fs = app.imgT.ImgProperties(tempCell,4);
                 time = (0:size(tempData, 2)-1) / Fs;
+                switch app.options.DetectTrace
+                    case 'Smooth'
+                        tempData = wdenoise(tempData, 'DenoisingMethod', 'BlockJS');
+                    case 'Gradient'
+                        tempData = gradient(tempData);
+                end
                 cla(axPlot);
                 switch app.PlotTypeButtonGroup.SelectedObject.Text
                     case 'All And Mean'
@@ -1853,7 +1948,7 @@ classdef sCaSpA < matlab.apps.AppBase
                             end
                         end
                         if ~app.plotOptions.AsRaster
-                            hLeg(2) = plot(axPlot, time, mean(tempData), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
+                            hLeg(2) = plot(axPlot, time, mean(tempData,1), 'Color', 'r', 'HitTest', 'off', 'ButtonDownFcn', '');
                         end
                         axPlot.XLim = [time(1) time(end)];
                         if app.plotOptions.Peaks
@@ -1864,11 +1959,16 @@ classdef sCaSpA < matlab.apps.AppBase
                             for c = 1:numel(spikeLoc)
                                 tempSpike = spikeLoc{c};
                                 if ~isempty(tempSpike)
-                                    xPatch = [];
-                                    xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
-                                    xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
-                                    yPatch = repmat(repelem(axPlot.YLim,2)', 1, numel(tempSpike));
-                                    patch(axPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                                    if ~app.plotOptions.AsRaster
+                                        xPatch = [];
+                                        xPatch([1 4],:) = ones(2,1) * (tempSpike - 0.1);
+                                        xPatch([2 3],:) = ones(2,1) * (tempSpike + 0.1);
+                                        yPatch = repmat(repelem(axPlot.YLim,2)', 1, numel(tempSpike));
+                                        patch(axPlot, xPatch, yPatch, [.0 .8 .8], 'EdgeColor', 'none', 'FaceAlpha', .1, 'HitTest', 'off', 'ButtonDownFcn', '');
+                                    else
+                                        spikeInt = tempData(c, round(tempSpike*Fs)+1);
+                                        plot(axPlot, tempSpike, spikeInt, 'or', 'MarkerSize', 4, 'HitTest', 'off', 'ButtonDownFcn', '')
+                                    end
                                 end
                             end
                         end
@@ -1915,7 +2015,7 @@ classdef sCaSpA < matlab.apps.AppBase
                             case 'Normalized MAD'
                                 spikeThr = median(tempData(cellN,:)) + mad(tempData(cellN,:)) * app.options.SigmaThr * (-1 / (sqrt(2) * erfcinv(3/2)));
                                 plot(axPlot, app.UIAxesPlot.XLim, [spikeThr spikeThr], ':b', 'HitTest', 'off', 'ButtonDownFcn', '')
-                            case 'Rolling StDev'
+                            case 'Rolling St. Dev.'
                                 winSize = (app.options.PeakMaxDuration / Fs) + (app.options.PeakMinDistance / Fs);
                                 tempMean = movmean(tempData(cellN,:), winSize, 2);
                                 tempStDev = std(diff(tempData(cellN,:),[],2),[],2);
@@ -1924,16 +2024,16 @@ classdef sCaSpA < matlab.apps.AppBase
                         end
                 end
                 % Refine the plot area
+                if app.plotOptions.AsRaster
+                    axPlot.YLim = [min(tempData, [], 'all') max(tempData, [], 'all')];
+                else
+                    app.UIAxesPlot.YLimMode = 'auto';
+                end
                 if app.FixYAxisButton.Value
                     if isempty(app.MaxValY)
                         FixYAxis(app);
                     end
                     axPlot.YLim = app.MaxValY;
-                end
-                if app.plotOptions.AsRaster
-                    axPlot.YLim = [min(tempData, [], 'all') max(tempData, [], 'all')];
-                else
-                    app.UIAxesPlot.YLimMode = 'auto';
                 end
                 if ~app.ZoomXButton.Value
                     app.MaxStepX = axPlot.XLim(2);
@@ -1970,10 +2070,13 @@ classdef sCaSpA < matlab.apps.AppBase
             ylabel('\DeltaF/F_0 (a.u.)');
             if any(matches(app.imgT.Properties.VariableNames, 'SpikeLocations'))
                 hAx = nexttile;
-                updatePlot(app, 'Axes', hAx, 'bSpikes', false);
+                showPeaks = app.plotOptions.Peaks;
+                app.plotOptions.Peaks = false;
+                updatePlot(app, 'Axes', hAx);
                 set(hAx, 'TickDir', 'Out');
                 xlabel('Time (s)');
                 ylabel('\DeltaF/F_0 (a.u.)');
+                app.plotOptions.Peaks = showPeaks;
             end
             if any(matches(app.imgT.Properties.VariableNames, 'SpikeRaster'))
                 % Get the raster plot with the FWHM
@@ -2298,6 +2401,13 @@ classdef sCaSpA < matlab.apps.AppBase
             warning('on', 'all');
         end
         
+        function batchGetIntensity(app, varargin)
+            nFOV = height(app.dicT);
+            for fov = 1:nFOV
+                getIntensity(app, fov);
+            end
+        end
+        
         function detrendData(app)
             imgFltr = find(~cellfun(@isempty, app.imgT.FF0Intensity));
             nImages = numel(imgFltr);
@@ -2318,8 +2428,8 @@ classdef sCaSpA < matlab.apps.AppBase
                         nRoi = size(tempData,1);
                         gaussData = zeros(size(tempData));
                         for r=1:nRoi
-                            lowPass = gaussianFilter(app, tempData(r,:), Fs, (Fs / 2)); % due to Nyquist the max frequency is 1/2 of Fs
-                            highPass = gaussianFilter(app, lowPass, Fs, app.options.DetrendSize); % high pass filter
+                            lowPass = gaussianFilter(tempData(r,:), Fs, (Fs / 2)); % due to Nyquist the max frequency is 1/2 of Fs
+                            highPass = gaussianFilter(lowPass, Fs, app.options.DetrendSize); % high pass filter
                             gaussData(r,:) = lowPass - highPass;
                         end
                         tempDetrend{i,1} = gaussData;
@@ -2591,7 +2701,7 @@ classdef sCaSpA < matlab.apps.AppBase
             app.DICZoomLabel = uilabel(app.OtherInteractionPanel, 'Position', [330 200 80 22], 'Text', 'Zoom factor');
             app.DICZoomEditField = uieditfield(app.OtherInteractionPanel, 'numeric', 'Position', [404 200 40 22], 'Enable', 'on', 'Value', 5);
             app.NetworkLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 138 100 22], 'Text', 'Network level');
-            app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 138 100 22], 'Value', '25%');
+            app.NetworkLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 138 100 22], 'Value', '50%');
             app.SynchLevelDropDownLabel = uilabel(app.OtherInteractionPanel, 'Position', [6 107 100 22], 'Text', 'Synch level');
             app.SynchLevelDropDown = uidropdown(app.OtherInteractionPanel, 'Items', {'Baseline', '25%', '50%', '75%', '90%'}, 'Position', [112 107 100 22], 'Value', '90%');
             app.ShowROIsLabelButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show ROIs Label', 'Position', [218 169 100 22], 'Enable', 'off',...
