@@ -117,6 +117,8 @@ classdef sCaSpA < matlab.apps.AppBase
         ShowPeaksButton
         ShowRiseDecayButton
         ShowAsRasterButton
+        ImportPerFOVCheck
+        BatchLoadButton
     end
     
     % File storage properties
@@ -177,13 +179,9 @@ classdef sCaSpA < matlab.apps.AppBase
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
         %                - 230425 = 3 -> Start implementation for cell clustering and out of network analysis
-        dailyBuilt = 0;
-        % bug fixes      - 230405 = 0 -> Several bug fixes and new implementations
-        %                - 230406 = 1 -> Improved saving and loading if BioFormat is used
-        %                - 230412 = 2 -> Start implementation of Delete ROIs button, improve loading of 16-bit images, improved file extenstion management
-        %                - 230413 = 3 -> Fixed changing the movie for multiple recording on the same FOV
-        %                - 230414 = 4 -> Add additional options for the plot
-        %                - 230425 = 0 -> Several bug fixes and new implementations
+        dailyBuilt = 1;
+        % bug fixes      - 230425 = 0 -> Several bug fixes and new implementations
+        %                - 230504 = 1 -> Add batch import for movies
         
     end
     
@@ -983,6 +981,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     % Load the image and calculate the FF0 on the ROIs
                     if app.bWarnings.LoadSingle
                         getIntensity(app)
+                    else
+                        tempDIC = contains(app.dicT.CellID, app.DropDownDIC.Value);
+                        app.dicT.LabeledROIs{tempDIC} = false(size(app.dicT.RoiSet{tempDIC},1),1);
                     end
                     % Show the ROIs with colors, and in the timelapse image
                     nRoi = numel(app.patchMask);
@@ -1321,6 +1322,10 @@ classdef sCaSpA < matlab.apps.AppBase
                 otherwise
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
             end
+            bLabel = false;
+            if any(cell2mat(app.dicT{imgIdx, 'LabeledROIs'}))
+                bLabel = true;
+            end
             hWait = uiprogressdlg(app.UIFigure, 'Title', 'Quantifying spikes', 'Message', 'Quantifying spikes in cell: ', 'Indeterminate', 'on');
             for idx = imgIdx'
                 hWait.Message = sprintf('Quantifying spikes in FOV: %d', idx);
@@ -1428,9 +1433,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 app.phiT{idx,1} = phaseMatrix;
                 app.phiT{idx,2} = phaseClusters;
                 % Check if there is a label for the ROIs
-                bLabel = false;
-                if any(cell2mat(app.dicT.LabeledROIs))
-                    bLabel = true;
+                if bLabel
                     labelFltr = app.dicT.LabeledROIs{idx};
                     ISI = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
                     sp = spikeProperties;
@@ -1727,25 +1730,27 @@ classdef sCaSpA < matlab.apps.AppBase
                     useCh = str2double(useCh);
                     togglePointer(app);
                     for idx = imgIdx
-                        imgData = app.dicT.RawImage{idx};
-                        imgData = imgData(:,:,useCh);
-                        tempRoi = app.dicT.RoiSet{idx};
-                        nRoi = size(tempRoi,1);
-                        roiIntensities = zeros(nRoi, 1);
-                        for roi = 1:nRoi
-                            currRoi = [tempRoi(roi,:) - app.options.RoiSize tempRoi(roi,:) + app.options.RoiSize];
-                            % Check the ROI is inside the image
-                            currRoi(1) = max(currRoi(1), 1);
-                            currRoi(2) = max(currRoi(2), 1);
-                            currRoi(3) = min(currRoi(3), size(imgData,1));
-                            currRoi(4) = min(currRoi(4), size(imgData,1));
-                            % For the image to be correct in ImageJ, column 1 = Y column 2 = X, then consider that ImageJ starts at 0
-                            roiIntensities(roi,:) = mean(imgData(currRoi(2):currRoi(4), currRoi(1):currRoi(3), :), [1 2]);
+                        if ~any(app.dicT.LabeledROIs{idx})
+                            imgData = app.dicT.RawImage{idx};
+                            imgData = imgData(:,:,useCh);
+                            tempRoi = app.dicT.RoiSet{idx};
+                            nRoi = size(tempRoi,1);
+                            roiIntensities = zeros(nRoi, 1);
+                            for roi = 1:nRoi
+                                currRoi = [tempRoi(roi,:) - app.options.RoiSize tempRoi(roi,:) + app.options.RoiSize];
+                                % Check the ROI is inside the image
+                                currRoi(1) = max(currRoi(1), 1);
+                                currRoi(2) = max(currRoi(2), 1);
+                                currRoi(3) = min(currRoi(3), size(imgData,1));
+                                currRoi(4) = min(currRoi(4), size(imgData,1));
+                                % For the image to be correct in ImageJ, column 1 = Y column 2 = X, then consider that ImageJ starts at 0
+                                roiIntensities(roi,:) = mean(imgData(currRoi(2):currRoi(4), currRoi(1):currRoi(3), :), [1 2]);
+                            end
+                            thrValues = multithresh(roiIntensities, 2);
+                            labeledRois = roiIntensities > thrValues(2);
+                            % Add the filter to the table (dicT, to not overload the imgT, but it's basically the same)
+                            app.dicT.LabeledROIs{idx} = labeledRois;
                         end
-                        thrValues = multithresh(roiIntensities, 2);
-                        labeledRois = roiIntensities > thrValues(2);
-                        % Add the filter to the table (dicT, to not overload the imgT, but it's basically the same)
-                        app.dicT.LabeledROIs{idx} = labeledRois;
                     end
                     togglePointer(app);
                     updateDIC(app);
@@ -2401,8 +2406,18 @@ classdef sCaSpA < matlab.apps.AppBase
             warning('on', 'all');
         end
         
-        function batchGetIntensity(app, varargin)
+        function BatchLoadMovie(app, varargin)
+            % Create an empty array to store the data
             nFOV = height(app.dicT);
+%             imgInfo = app.imgT.ImgProperties(1,:);
+%             imgInfo(1,4) = app.imgType;
+%             movieLoaded = cell(nFOV,1);
+%             allFileNames = app.imgT.Filename;
+%             bioformat = app.isBioFormat;
+%             parfor fov = 1:nFOV
+%                 movieLoaded{fov} = loadTiff(allFileNames{fov}, imgInfo, 0, bioformat);
+%             end
+%             size(movieLoaded);           
             for fov = 1:nFOV
                 getIntensity(app, fov);
             end
@@ -2512,6 +2527,10 @@ classdef sCaSpA < matlab.apps.AppBase
             app.plotOptions.RiseDecay = app.ShowRiseDecayButton.Value;
             updatePlot(app);
             figure(app.UIFigure);
+        end
+        
+        function ChangeWarning(app)
+            app.bWarnings.LoadSingle = app.ImportPerFOVCheck.Value;
         end
     end
     
@@ -2712,6 +2731,10 @@ classdef sCaSpA < matlab.apps.AppBase
                 'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
             app.ShowAsRasterButton = uibutton(app.OtherInteractionPanel, 'state', 'Text', 'Show as Raster', 'Position', [218 76 100 22], 'Enable', 'off',...
                 'ValueChangedFcn', createCallbackFcn(app, @ChangePlotOptions, false));
+            app.ImportPerFOVCheck = uicheckbox(app.OtherInteractionPanel, 'Text', 'Load each FOV', 'Value', 1, 'Position', [330 169 120 22],...
+                'ValueChangedFcn', createCallbackFcn(app, @ChangeWarning, false));
+            app.BatchLoadButton = uibutton(app.OtherInteractionPanel, 'push', 'Text', 'Batch load movie', 'Position', [330 138 100 22], 'Enable', 'on',...
+                'ButtonPushedFcn', createCallbackFcn(app, @BatchLoadMovie, false));
             % Show the figure after all components are created
             movegui(app.UIFigure, 'center');
             app.UIFigure.Visible = 'on';
