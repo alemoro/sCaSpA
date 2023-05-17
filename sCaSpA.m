@@ -179,9 +179,10 @@ classdef sCaSpA < matlab.apps.AppBase
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
         %                - 230425 = 3 -> Start implementation for cell clustering and out of network analysis
-        dailyBuilt = 1;
+        dailyBuilt = 2;
         % bug fixes      - 230425 = 0 -> Several bug fixes and new implementations
         %                - 230504 = 1 -> Add batch import for movies
+        %                - 230517 = 2 -> Performance improvements
         
     end
     
@@ -370,6 +371,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     if isempty(app.dicT)
                         app.dicT = networkFiles.dicT;
                     else
+                        if ~any(contains(networkFiles.dicT.Properties.VariableNames, 'LabeledROIs'))
+                            networkFiles.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), networkFiles.dicT.RoiSet, 'UniformOutput', false);
+                        end
                         app.dicT = [app.dicT; networkFiles.dicT];
                     end
                 end
@@ -387,12 +391,10 @@ classdef sCaSpA < matlab.apps.AppBase
                     if isempty(app.imgT)
                         app.imgT = networkFiles.imgT;
                     else
-                        if numel(app.imgT.Properties.VariableNames) ~= numel(networkFiles.imgT.Properties.VariableNames)
-                            % We need to add columns
-                            missVars = setdiff(app.imgT.Properties.VariableNames, networkFiles.imgT.Properties.VariableNames);
-                            for missVar = missVars
-                                networkFiles.imgT = addvars(networkFiles.imgT, nan(size(networkFiles.imgT,1), 1), 'NewVariableNames',missVar);
-                            end
+                        if ~isfield(networkFiles, 'options') || ~isfield(networkFiles.options, 'UIVersion') || str2double(regexprep(networkFiles.options.UIVersion,'#','')) < 1.3
+                            networkFiles.imgT.KeepFOV = true(height(networkFiles.imgT),1);
+                            networkFiles.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), networkFiles.imgT.RawIntensity, 'UniformOutput', false);
+                            networkFiles.imgT = movevars(networkFiles.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
                         end
                         app.imgT = [app.imgT; networkFiles.imgT];
                     end
@@ -409,7 +411,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.imgT.KeepROI = cellfun(@(x) true(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
                     app.imgT = movevars(app.imgT, {'KeepFOV', 'KeepROI'}, 'After', 'DetrendData');
                     if ~any(contains(app.dicT.Properties.VariableNames, 'LabeledROIs'))
-                        app.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), app.imgT.RawIntensity, 'UniformOutput', false);
+                        app.dicT.LabeledROIs = cellfun(@(x) false(size(x,1),1), app.dicT.RoiSet, 'UniformOutput', false);
                     end
                     if ~isfield(networkFiles, 'stdT')
                         app.stdT = cell(height(app.imgT),1);
@@ -1323,7 +1325,7 @@ classdef sCaSpA < matlab.apps.AppBase
                     imgIdx = find(contains(app.imgT.CellID, app.DropDownTimelapse.Value));
             end
             bLabel = false;
-            if any(cell2mat(app.dicT{imgIdx, 'LabeledROIs'}))
+            if any(cell2mat(app.dicT.LabeledROIs))
                 bLabel = true;
             end
             hWait = uiprogressdlg(app.UIFigure, 'Title', 'Quantifying spikes', 'Message', 'Quantifying spikes in cell: ', 'Indeterminate', 'on');
@@ -1357,354 +1359,364 @@ classdef sCaSpA < matlab.apps.AppBase
                 Fs = app.imgT.ImgProperties(idx,4);
                 tempData = app.imgT.DetrendData{idx};
                 [nCell, nFrames] = size(tempData);
-                tempLoc = cellfun(@(x) round(x * Fs), app.imgT.SpikeLocations{idx}, 'UniformOutput', false);
-                tempInt = cell2mat(app.imgT.SpikeIntensities{idx}');
-                % filter out the traces that we wanted to discard
-                traceFltr = app.imgT.KeepROI{idx};
-                qcd = @(x) (quantile(x, .75) - quantile(x, .25)) / (quantile(x, .75) + quantile(x, .25));
-                % Calculate the actual rise and decay (findpeaks only reports the FWHM, not where the start and end are)
-                optRD = struct('UseParallel', true, 'TranNetwork', false, 'UseTrained', false);
-                [spikeRise, spikeDecay, spikeProperties] = CalciumRiseAndDecay(tempData, tempLoc, Fs, app.options, optRD);
-                % Calculate the spike frequency for single cell, and the proportion of silent cells
-                totTime = (nFrames-1) / Fs;
-                cellFreq = cellfun(@(x) numel(x) / totTime * 60, tempLoc);
-                silentCells = sum(cellFreq==0) / nCell * 100;
-                % Calculate the interspike interval
-                interSpikeInterval = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
-                interSpikeInterval = cell2mat(interSpikeInterval');
-                % Create a raster plot based on the start and decay time, and one based on the peaks +- half of the 90% duration
-                tempRast = nan(nCell, nFrames);
-                tempRastPeak = nan(nCell, nFrames);
-                for c = 1:nCell
-                    sStart = spikeRise{c}(basedRaster,:);
-                    sEnd = spikeDecay{c}(basedRaster,:);
-                    pStart = spikeRise{c}(basedPeak,:);
-                    pEnd = spikeDecay{c}(basedPeak,:);
-                    for s = 1:numel(sStart)
-                        tempRast(c,sStart(s):sEnd(s)) = c;
-                        tempRastPeak(c,pStart(s):pEnd(s)) = c;
-                    end
-                end
-                % Calculate the network event with gaussian smoothing of the sum of the raster (similar to EvA)
-                networkRaster = tempRast;
-                networkRaster(~isnan(networkRaster)) = 1;
-                networkRaster(isnan(networkRaster)) = 0;
-                networkRaster = sum(networkRaster);
-                smoothWindow = gausswin(10);
-                smoothWindow = smoothWindow / sum(smoothWindow);
-                networkRaster = filter(smoothWindow, 1, networkRaster);
-                % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
-                [networkPeaks, networkLocs] = findpeaks(networkRaster, Fs, 'MinPeakProminence', 2.5);
-                netThreshold = floor(sum(cellFreq>0) * (app.NetworkThresholdLabelEditField.Value / 100));
-                networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
-                % Calculate the number of spikes outside the network activity
-                networkLocs = ceil(networkLocs * Fs);
-                spikeFilter = cell(nCell,1);
-                for c = 1:nCell
-                    sStart = spikeRise{c}(basedRaster,:);
-                    sEnd = spikeDecay{c}(basedRaster,:);
-                    for s = 1:numel(sStart)
-                        for ns = 1:numel(networkLocs)
-                            isNetwork = sStart(s) <= networkLocs(ns) & sEnd(s) >= networkLocs(ns);
-                            if isNetwork
-                                spikeFilter{c}(s) = 1;
-                                break
-                            else
-                                spikeFilter{c}(s) = 0;
-                            end
-                                
+                if isempty(app.imgT.SpikeLocations{idx})
+                    app.imgT.KeepFOV(idx) = false;
+                    app.imgT{idx, 26:end} = NaN;
+                else
+                    tempLoc = cellfun(@(x) round(x * Fs), app.imgT.SpikeLocations{idx}, 'UniformOutput', false);
+                    tempInt = cell2mat(app.imgT.SpikeIntensities{idx}');
+                    % filter out the traces that we wanted to discard
+                    traceFltr = app.imgT.KeepROI{idx};
+                    qcd = @(x) (quantile(x, .75) - quantile(x, .25)) / (quantile(x, .75) + quantile(x, .25));
+                    % Calculate the actual rise and decay (findpeaks only reports the FWHM, not where the start and end are)
+                    optRD = struct('UseParallel', true, 'TranNetwork', false, 'UseTrained', false);
+                    [spikeRise, spikeDecay, spikeProperties] = CalciumRiseAndDecay(tempData, tempLoc, Fs, app.options, optRD);
+                    % Calculate the spike frequency for single cell, and the proportion of silent cells
+                    totTime = (nFrames-1) / Fs;
+                    cellFreq = cellfun(@(x) numel(x) / totTime * 60, tempLoc);
+                    silentCells = sum(cellFreq==0) / nCell * 100;
+                    % Calculate the interspike interval
+                    interSpikeInterval = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
+                    interSpikeInterval = cell2mat(interSpikeInterval');
+                    % Create a raster plot based on the start and decay time, and one based on the peaks +- half of the 90% duration
+                    tempRast = nan(nCell, nFrames);
+                    tempRastPeak = nan(nCell, nFrames);
+                    for c = 1:nCell
+                        sStart = spikeRise{c}(basedRaster,:);
+                        sEnd = spikeDecay{c}(basedRaster,:);
+                        pStart = spikeRise{c}(basedPeak,:);
+                        pEnd = spikeDecay{c}(basedPeak,:);
+                        for s = 1:numel(sStart)
+                            tempRast(c,sStart(s):sEnd(s)) = c;
+                            tempRastPeak(c,pStart(s):pEnd(s)) = c;
                         end
                     end
-                end
-                spikesInNetwork = cellfun(@sum, spikeFilter);
-                spikesOutNetwork = cellfun(@numel, tempLoc) - spikesInNetwork;
-                spikeIsolated = spikesOutNetwork ./ (spikesInNetwork+spikesOutNetwork) * 100;
-                spikeFltr = logical(cell2mat(spikeFilter'));
-                intIsolated = tempInt(spikeFltr);
-                % Calculate the average synchronicity (based on the 90% duration)
-                rasterDuration = tempRastPeak;
-                rasterDuration(~isnan(rasterDuration)) = 1;
-                rasterDuration(isnan(rasterDuration)) = 0;
-                rasterDuration = sum(rasterDuration);
-                rasterDuration = filter(smoothWindow, 1, rasterDuration);
-                syncPeaks = findpeaks(rasterDuration, Fs, 'MinPeakProminence', 2.5);
-                % Test: calculate the correlation based on the phase synchronization PMID: 21994056
-                [phaseMatrix, phaseClusters] = phaseCorrelation(tempData, tempLoc);
-                app.phiT{idx,1} = phaseMatrix;
-                app.phiT{idx,2} = phaseClusters;
-                % Check if there is a label for the ROIs
-                if bLabel
-                    labelFltr = app.dicT.LabeledROIs{idx};
-                    ISI = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
-                    sp = spikeProperties;
-                    tInt = app.imgT.SpikeIntensities{idx};
-                    positiveIsolated = spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr));
-                    negativeIsolated = spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr));
-                end
-                % Add the data according to where it needed to be detected
-                app.imgT.SpikeProperties{idx} = [spikeProperties, spikeRise, spikeDecay];
-                app.imgT.SpikeRaster{idx} = tempRastPeak;
-                app.imgT.FWHMRaster{idx} = tempRast;
-                app.imgT.NetworkRaster{idx} = networkRaster;
-                app.imgT.SpikeInOut{idx} = [cellfun(@numel, tempLoc), spikesInNetwork, spikesOutNetwork];
-                app.imgT.CellFrequency{idx} = cellFreq;
-                app.imgT.NetworkFrequency(idx) = networkFreq;
-                app.imgT.SilentCells(idx) = silentCells;
-                spikeProperties = cell2mat(spikeProperties');
-                % Add the descriptors: Mean
-                app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0), 'omitnan');
-                app.imgT.MeanInterSpikeInterval(idx) = mean(interSpikeInterval, 'omitnan');
-                app.imgT.MeanSynchronicity(idx) = mean(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
-                app.imgT.MeanIsolated(idx) = mean(spikeIsolated, 'omitnan');
-                app.imgT.MeanTimeToRise(idx) = mean(spikeProperties(1,:), 'omitnan');
-                app.imgT.MeanDuration25(idx) = mean(spikeProperties(2,:), 'omitnan');
-                app.imgT.MeanDuration50(idx) = mean(spikeProperties(3,:), 'omitnan');
-                app.imgT.MeanDuration75(idx) = mean(spikeProperties(4,:), 'omitnan');
-                app.imgT.MeanDuration90(idx) = mean(spikeProperties(5,:), 'omitnan');
-                app.imgT.MeanIntensity(idx) = mean(tempInt, 'omitnan');
-                app.imgT.MeanProminence(idx) = mean(spikeProperties(6,:), 'omitnan');
-                app.imgT.MeanTimeToDecay(idx) = mean(spikeProperties(7,:), 'omitnan');
-                app.imgT.MeanDecayTau(idx) = mean(spikeProperties(8,:), 'omitnan');
-                app.imgT.MeanIntensityIsolated(idx) = mean(intIsolated, 'omitnan');
-                if bLabel
-                    app.imgT.MeanFrequencyPositive(idx) = mean(cellFreq(labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.MeanFrequencyNegative(idx) = mean(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.MeanISIPositive(idx) = mean(cell2mat(ISI(labelFltr)'), 'omitnan');
-                    app.imgT.MeanISINegative(idx) = mean(cell2mat(ISI(~labelFltr)'), 'omitnan');
-                    app.imgT.MeanIsolatedPositive(idx) = mean(positiveIsolated, 'omitnan');
-                    app.imgT.MeanIsolatedNegative(idx) = mean(negativeIsolated, 'omitnan');
-                    app.imgT.MeanTimeToRisePositive(idx) = mean(cell2mat(sp(labelFltr,1)'), 'omitnan');
-                    app.imgT.MeanTimeToRiseNegative(idx) = mean(cell2mat(sp(~labelFltr,1)'), 'omitnan');
-                    app.imgT.MeanDuration25Positive(idx) = mean(cell2mat(sp(labelFltr,2)'), 'omitnan');
-                    app.imgT.MeanDuration25Negative(idx) = mean(cell2mat(sp(~labelFltr,2)'), 'omitnan');
-                    app.imgT.MeanDuration50Positive(idx) = mean(cell2mat(sp(labelFltr,3)'), 'omitnan');
-                    app.imgT.MeanDuration50Negative(idx) = mean(cell2mat(sp(~labelFltr,3)'), 'omitnan');
-                    app.imgT.MeanDuration75Positive(idx) = mean(cell2mat(sp(labelFltr,4)'), 'omitnan');
-                    app.imgT.MeanDuration75Negative(idx) = mean(cell2mat(sp(~labelFltr,4)'), 'omitnan');
-                    app.imgT.MeanDuration90Positive(idx) = mean(cell2mat(sp(labelFltr,5)'), 'omitnan');
-                    app.imgT.MeanDuration90Negative(idx) = mean(cell2mat(sp(~labelFltr,5)'), 'omitnan');
-                    app.imgT.MeanIntensityPositive(idx) = mean(cell2mat(tInt(labelFltr)'), 'omitnan');
-                    app.imgT.MeanIntensityNegative(idx) = mean(cell2mat(tInt(~labelFltr)'), 'omitnan');
-                    app.imgT.MeanProminencePositive(idx) = mean(cell2mat(sp(labelFltr,6)'), 'omitnan');
-                    app.imgT.MeanProminenceNegative(idx) = mean(cell2mat(sp(~labelFltr,6)'), 'omitnan');
-                    app.imgT.MeanTimeToDecayPositive(idx) = mean(cell2mat(sp(labelFltr,7)'), 'omitnan');
-                    app.imgT.MeanTimeToDecayNegative(idx) = mean(cell2mat(sp(~labelFltr,7)'), 'omitnan');
-                    app.imgT.MeanDecayTauPositive(idx) = mean(cell2mat(sp(labelFltr,8)'), 'omitnan');
-                    app.imgT.MeanDecayTauNegative(idx) = mean(cell2mat(sp(~labelFltr,8)'), 'omitnan');
-                end
-                % Add the descriptors: Median
-                app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0), 'omitnan');
-                app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval, 'omitnan');
-                app.imgT.MedianSynchronicity(idx) = median(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
-                app.imgT.MedianIsolated(idx) = median(spikeIsolated, 'omitnan');
-                app.imgT.MedianTimeToRise(idx) = median(spikeProperties(1,:), 'omitnan');
-                app.imgT.MedianDuration25(idx) = median(spikeProperties(2,:), 'omitnan');
-                app.imgT.MedianDuration50(idx) = median(spikeProperties(3,:), 'omitnan');
-                app.imgT.MedianDuration75(idx) = median(spikeProperties(4,:), 'omitnan');
-                app.imgT.MedianDuration90(idx) = median(spikeProperties(5,:), 'omitnan');
-                app.imgT.MedianIntensity(idx) = median(tempInt, 'omitnan');
-                app.imgT.MedianProminence(idx) = median(spikeProperties(6,:), 'omitnan');
-                app.imgT.MedianTimeToDecay(idx) = median(spikeProperties(7,:), 'omitnan');
-                app.imgT.MedianDecayTau(idx) = median(spikeProperties(8,:), 'omitnan');
-                app.imgT.MedianIntensityIsolated(idx) = median(intIsolated, 'omitnan');
-                if bLabel
-                    app.imgT.MedianFrequencyPositive(idx) = median(cellFreq(labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.MedianFrequencyNegative(idx) = median(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.MedianISIPositive(idx) = median(cell2mat(ISI(labelFltr)'), 'omitnan');
-                    app.imgT.MedianISINegative(idx) = median(cell2mat(ISI(~labelFltr)'), 'omitnan');
-                    app.imgT.MedianIsolatedPositive(idx) = median(positiveIsolated, 'omitnan');
-                    app.imgT.MedianIsolatedNegative(idx) = median(negativeIsolated, 'omitnan');
-                    app.imgT.MedianTimeToRisePositive(idx) = median(cell2mat(sp(labelFltr,1)'), 'omitnan');
-                    app.imgT.MedianTimeToRiseNegative(idx) = median(cell2mat(sp(~labelFltr,1)'), 'omitnan');
-                    app.imgT.MedianDuration25Positive(idx) = median(cell2mat(sp(labelFltr,2)'), 'omitnan');
-                    app.imgT.MedianDuration25Negative(idx) = median(cell2mat(sp(~labelFltr,2)'), 'omitnan');
-                    app.imgT.MedianDuration50Positive(idx) = median(cell2mat(sp(labelFltr,3)'), 'omitnan');
-                    app.imgT.MedianDuration50Negative(idx) = median(cell2mat(sp(~labelFltr,3)'), 'omitnan');
-                    app.imgT.MedianDuration75Positive(idx) = median(cell2mat(sp(labelFltr,4)'), 'omitnan');
-                    app.imgT.MedianDuration75Negative(idx) = median(cell2mat(sp(~labelFltr,4)'), 'omitnan');
-                    app.imgT.MedianDuration90Positive(idx) = median(cell2mat(sp(labelFltr,5)'), 'omitnan');
-                    app.imgT.MedianDuration90Negative(idx) = median(cell2mat(sp(~labelFltr,5)'), 'omitnan');
-                    app.imgT.MedianIntensityPositive(idx) = median(cell2mat(tInt(labelFltr)'), 'omitnan');
-                    app.imgT.MedianIntensityNegative(idx) = median(cell2mat(tInt(~labelFltr)'), 'omitnan');
-                    app.imgT.MedianProminencePositive(idx) = median(cell2mat(sp(labelFltr,6)'), 'omitnan');
-                    app.imgT.MedianProminenceNegative(idx) = median(cell2mat(sp(~labelFltr,6)'), 'omitnan');
-                    app.imgT.MedianTimeToDecayPositive(idx) = median(cell2mat(sp(labelFltr,7)'), 'omitnan');
-                    app.imgT.MedianTimeToDecayNegative(idx) = median(cell2mat(sp(~labelFltr,7)'), 'omitnan');
-                    app.imgT.MedianDecayTauPositive(idx) = median(cell2mat(sp(labelFltr,8)'), 'omitnan');
-                    app.imgT.MedianDecayTauNegative(idx) = median(cell2mat(sp(~labelFltr,8)'), 'omitnan');
-                end
-                % Add the descriptors: Coefficient of variation
-                app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0), 'omitnan') / mean(cellFreq(cellFreq>0), 'omitnan');
-                app.imgT.CoVInterSpikeInterval(idx) = std(interSpikeInterval, 'omitnan') / mean(interSpikeInterval, 'omitnan');
-                app.imgT.CoVSynchronicity(idx) = std(syncPeaks, 'omitnan') / mean(syncPeaks, 'omitnan');
-                app.imgT.CoVIsolated(idx) = std(spikeIsolated, 'omitnan') / mean(spikeIsolated, 'omitnan');
-                app.imgT.CoVTimeToRise(idx) = std(spikeProperties(1,:), 'omitnan') / mean(spikeProperties(1,:), 'omitnan');
-                app.imgT.CoVDuration25(idx) = std(spikeProperties(2,:), 'omitnan') / mean(spikeProperties(2,:), 'omitnan');
-                app.imgT.CoVDuration50(idx) = std(spikeProperties(3,:), 'omitnan') / mean(spikeProperties(3,:), 'omitnan');
-                app.imgT.CoVDuration75(idx) = std(spikeProperties(4,:), 'omitnan') / mean(spikeProperties(4,:), 'omitnan');
-                app.imgT.CoVDuration90(idx) = std(spikeProperties(5,:), 'omitnan') / mean(spikeProperties(5,:), 'omitnan');
-                app.imgT.CoVIntensity(idx) = std(tempInt, 'omitnan') / mean(tempInt, 'omitnan');
-                app.imgT.CoVProminence(idx) = std(spikeProperties(6,:), 'omitnan') / mean(spikeProperties(6,:), 'omitnan');
-                app.imgT.CoVTimeToDecay(idx) = std(spikeProperties(7,:), 'omitnan') / mean(spikeProperties(7,:), 'omitnan');
-                app.imgT.CoVDecayTau(idx) = std(spikeProperties(8,:), 'omitnan') / mean(spikeProperties(8,:), 'omitnan');
-                app.imgT.CoVIntensityIsolated(idx) = std(intIsolated, 'omitnan') / mean(intIsolated, 'omitnan');
-                % Add the descriptors: Quantile coefficient of dispersion
-                app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));              
-                app.imgT.QCDInterSpikeInterval(idx) = qcd(interSpikeInterval);
-                app.imgT.QCDSynchronicity(idx) = qcd(syncPeaks);
-                app.imgT.QCDIsolated(idx) = qcd(spikeIsolated);
-                app.imgT.QCDTimeToRise(idx) = qcd(spikeProperties(1,:));
-                app.imgT.QCDDuration25(idx) = qcd(spikeProperties(2,:));
-                app.imgT.QCDDuration50(idx) = qcd(spikeProperties(3,:));
-                app.imgT.QCDDuration75(idx) = qcd(spikeProperties(4,:));
-                app.imgT.QCDDuration90(idx) = qcd(spikeProperties(5,:));
-                app.imgT.QCDIntensity(idx) = qcd(tempInt);
-                app.imgT.QCDProminence(idx) = qcd(spikeProperties(6,:));
-                app.imgT.QCDTimeToDecay(idx) = qcd(spikeProperties(7,:));
-                app.imgT.QCDDecayTau(idx) = qcd(spikeProperties(8,:));
-                app.imgT.QCDIntensityIsolated(idx) = qcd(intIsolated);
-                if bLabel
-                    app.imgT.QCDFrequencyPositive(idx) = qcd(cellFreq(labelFltr & cellFreq>0));
-                    app.imgT.QCDFrequencyNegative(idx) = qcd(cellFreq(~labelFltr & cellFreq>0));
-                    app.imgT.QCDISIPositive(idx) = qcd(cell2mat(ISI(labelFltr)'));
-                    app.imgT.QCDISINegative(idx) = qcd(cell2mat(ISI(~labelFltr)'));
-                    app.imgT.QCDIsolatedPositive(idx) = qcd(positiveIsolated);
-                    app.imgT.QCDIsolatedNegative(idx) = qcd(negativeIsolated);
-                    app.imgT.QCDTimeToRisePositive(idx) = qcd(cell2mat(sp(labelFltr,1)'));
-                    app.imgT.QCDTimeToRiseNegative(idx) = qcd(cell2mat(sp(~labelFltr,1)'));
-                    app.imgT.QCDDuration25Positive(idx) = qcd(cell2mat(sp(labelFltr,2)'));
-                    app.imgT.QCDDuration25Negative(idx) = qcd(cell2mat(sp(~labelFltr,2)'));
-                    app.imgT.QCDDuration50Positive(idx) = qcd(cell2mat(sp(labelFltr,3)'));
-                    app.imgT.QCDDuration50Negative(idx) = qcd(cell2mat(sp(~labelFltr,3)'));
-                    app.imgT.QCDDuration75Positive(idx) = qcd(cell2mat(sp(labelFltr,4)'));
-                    app.imgT.QCDDuration75Negative(idx) = qcd(cell2mat(sp(~labelFltr,4)'));
-                    app.imgT.QCDDuration90Positive(idx) = qcd(cell2mat(sp(labelFltr,5)'));
-                    app.imgT.QCDDuration90Negative(idx) = qcd(cell2mat(sp(~labelFltr,5)'));
-                    app.imgT.QCDIntensityPositive(idx) = qcd(cell2mat(tInt(labelFltr)'));
-                    app.imgT.QCDIntensityNegative(idx) = qcd(cell2mat(tInt(~labelFltr)'));
-                    app.imgT.QCDProminencePositive(idx) = qcd(cell2mat(sp(labelFltr,6)'));
-                    app.imgT.QCDProminenceNegative(idx) = qcd(cell2mat(sp(~labelFltr,6)'));
-                    app.imgT.QCDTimeToDecayPositive(idx) = qcd(cell2mat(sp(labelFltr,7)'));
-                    app.imgT.QCDTimeToDecayNegative(idx) = qcd(cell2mat(sp(~labelFltr,7)'));
-                    app.imgT.QCDDecayTauPositive(idx) = qcd(cell2mat(sp(labelFltr,8)'));
-                    app.imgT.QCDDecayTauNegative(idx) = qcd(cell2mat(sp(~labelFltr,8)'));
-                end
-                % Add the descriptors: Variance
-                app.imgT.VarianceFrequency(idx) = var(cellFreq(cellFreq>0), 'omitnan');              
-                app.imgT.VarianceInterSpikeInterval(idx) = var(interSpikeInterval, 'omitnan');
-                app.imgT.VarianceSynchronicity(idx) = var(syncPeaks, 'omitnan');
-                app.imgT.VarianceIsolated(idx) = var(spikeIsolated, 'omitnan');
-                app.imgT.VarianceTimeToRise(idx) = var(spikeProperties(1,:), 'omitnan');
-                app.imgT.VarianceDuration25(idx) = var(spikeProperties(2,:), 'omitnan');
-                app.imgT.VarianceDuration50(idx) = var(spikeProperties(3,:), 'omitnan');
-                app.imgT.VarianceDuration75(idx) = var(spikeProperties(4,:), 'omitnan');
-                app.imgT.VarianceDuration90(idx) = var(spikeProperties(5,:), 'omitnan');
-                app.imgT.VarianceIntensity(idx) = var(tempInt, 'omitnan');
-                app.imgT.VarianceProminence(idx) = var(spikeProperties(6,:), 'omitnan');
-                app.imgT.VarianceTimeToDecay(idx) = var(spikeProperties(7,:), 'omitnan');
-                app.imgT.VarianceDecayTau(idx) = var(spikeProperties(8,:), 'omitnan');
-                app.imgT.VarianceIntensityIsolated(idx) = var(intIsolated, 'omitnan');
-                if bLabel
-                    app.imgT.VarianceFrequencyPositive(idx) = var(cellFreq(labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.VarianceFrequencyNegative(idx) = var(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
-                    app.imgT.VarianceISIPositive(idx) = var(cell2mat(ISI(labelFltr)'), 'omitnan');
-                    app.imgT.VarianceISINegative(idx) = var(cell2mat(ISI(~labelFltr)'), 'omitnan');
-                    app.imgT.VarianceIsolatedPositive(idx) = var(positiveIsolated);
-                    app.imgT.VarianceIsolatedNegative(idx) = var(negativeIsolated);
-                    app.imgT.VarianceIsolatedPositive(idx) = var(spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr)), 'omitnan');
-                    app.imgT.VarianceIsolatedNegative(idx) = var(spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr)), 'omitnan');
-                    app.imgT.VarianceTimeToRisePositive(idx) = var(cell2mat(sp(labelFltr,1)'), 'omitnan');
-                    app.imgT.VarianceTimeToRiseNegative(idx) = var(cell2mat(sp(~labelFltr,1)'), 'omitnan');
-                    app.imgT.VarianceDuration25Positive(idx) = var(cell2mat(sp(labelFltr,2)'), 'omitnan');
-                    app.imgT.VarianceDuration25Negative(idx) = var(cell2mat(sp(~labelFltr,2)'), 'omitnan');
-                    app.imgT.VarianceDuration50Positive(idx) = var(cell2mat(sp(labelFltr,3)'), 'omitnan');
-                    app.imgT.VarianceDuration50Negative(idx) = var(cell2mat(sp(~labelFltr,3)'), 'omitnan');
-                    app.imgT.VarianceDuration75Positive(idx) = var(cell2mat(sp(labelFltr,4)'), 'omitnan');
-                    app.imgT.VarianceDuration75Negative(idx) = var(cell2mat(sp(~labelFltr,4)'), 'omitnan');
-                    app.imgT.VarianceDuration90Positive(idx) = var(cell2mat(sp(labelFltr,5)'), 'omitnan');
-                    app.imgT.VarianceDuration90Negative(idx) = var(cell2mat(sp(~labelFltr,5)'), 'omitnan');
-                    app.imgT.VarianceIntensityPositive(idx) = var(cell2mat(tInt(labelFltr)'), 'omitnan');
-                    app.imgT.VarianceIntensityNegative(idx) = var(cell2mat(tInt(~labelFltr)'), 'omitnan');
-                    app.imgT.VarianceProminencePositive(idx) = var(cell2mat(sp(labelFltr,6)'), 'omitnan');
-                    app.imgT.VarianceProminenceNegative(idx) = var(cell2mat(sp(~labelFltr,6)'), 'omitnan');
-                    app.imgT.VarianceTimeToDecayPositive(idx) = var(cell2mat(sp(labelFltr,7)'), 'omitnan');
-                    app.imgT.VarianceTimeToDecayNegative(idx) = var(cell2mat(sp(~labelFltr,7)'), 'omitnan');
-                    app.imgT.VarianceDecayTauPositive(idx) = var(cell2mat(sp(labelFltr,8)'), 'omitnan');
-                    app.imgT.VarianceDecayTauNegative(idx) = var(cell2mat(sp(~labelFltr,8)'), 'omitnan');
-                end
-                % Add the descriptors: Skewness
-                app.imgT.SkewnessFrequency(idx) = skewness(cellFreq(cellFreq>0),0);              
-                app.imgT.SkewnessInterSpikeInterval(idx) = skewness(interSpikeInterval,0);
-                app.imgT.SkewnessSynchronicity(idx) = skewness(syncPeaks,0);
-                app.imgT.SkewnessTimeToRise(idx) = skewness(spikeProperties(1,:),0);
-                app.imgT.SkewnessDuration25(idx) = skewness(spikeProperties(2,:),0);
-                app.imgT.SkewnessDuration50(idx) = skewness(spikeProperties(3,:),0);
-                app.imgT.SkewnessDuration75(idx) = skewness(spikeProperties(4,:),0);
-                app.imgT.SkewnessDuration90(idx) = skewness(spikeProperties(5,:),0);
-                app.imgT.SkewnessIntensity(idx) = skewness(tempInt,0);
-                app.imgT.SkewnessProminence(idx) = skewness(spikeProperties(6,:),0);
-                app.imgT.SkewnessTimeToDecay(idx) = skewness(spikeProperties(7,:),0);
-                app.imgT.SkewnessDecayTau(idx) = skewness(spikeProperties(8,:),0);
-                if bLabel
-                    app.imgT.SkewnessFrequencyPositive(idx) = skewness(cellFreq(labelFltr & cellFreq>0));
-                    app.imgT.SkewnessFrequencyNegative(idx) = skewness(cellFreq(~labelFltr & cellFreq>0));
-                    app.imgT.SkewnessISIPositive(idx) = skewness(cell2mat(ISI(labelFltr)'));
-                    app.imgT.SkewnessISINegative(idx) = skewness(cell2mat(ISI(~labelFltr)'));
-                    app.imgT.SkewnessTimeToRisePositive(idx) = skewness(cell2mat(sp(labelFltr,1)'));
-                    app.imgT.SkewnessTimeToRiseNegative(idx) = skewness(cell2mat(sp(~labelFltr,1)'));
-                    app.imgT.SkewnessDuration25Positive(idx) = skewness(cell2mat(sp(labelFltr,2)'));
-                    app.imgT.SkewnessDuration25Negative(idx) = skewness(cell2mat(sp(~labelFltr,2)'));
-                    app.imgT.SkewnessDuration50Positive(idx) = skewness(cell2mat(sp(labelFltr,3)'));
-                    app.imgT.SkewnessDuration50Negative(idx) = skewness(cell2mat(sp(~labelFltr,3)'));
-                    app.imgT.SkewnessDuration75Positive(idx) = skewness(cell2mat(sp(labelFltr,4)'));
-                    app.imgT.SkewnessDuration75Negative(idx) = skewness(cell2mat(sp(~labelFltr,4)'));
-                    app.imgT.SkewnessDuration90Positive(idx) = skewness(cell2mat(sp(labelFltr,5)'));
-                    app.imgT.SkewnessDuration90Negative(idx) = skewness(cell2mat(sp(~labelFltr,5)'));
-                    app.imgT.SkewnessIntensityPositive(idx) = skewness(cell2mat(tInt(labelFltr)'));
-                    app.imgT.SkewnessIntensityNegative(idx) = skewness(cell2mat(tInt(~labelFltr)'));
-                    app.imgT.SkewnessProminencePositive(idx) = skewness(cell2mat(sp(labelFltr,6)'));
-                    app.imgT.SkewnessProminenceNegative(idx) = skewness(cell2mat(sp(~labelFltr,6)'));
-                    app.imgT.SkewnessTimeToDecayPositive(idx) = skewness(cell2mat(sp(labelFltr,7)'));
-                    app.imgT.SkewnessTimeToDecayNegative(idx) = skewness(cell2mat(sp(~labelFltr,7)'));
-                    app.imgT.SkewnessDecayTauPositive(idx) = skewness(cell2mat(sp(labelFltr,8)'));
-                    app.imgT.SkewnessDecayTauNegative(idx) = skewness(cell2mat(sp(~labelFltr,8)'));
-                end
-                % Add the descriptors: Kurtosis
-                app.imgT.KurtosisFrequency(idx) = kurtosis(cellFreq(cellFreq>0),0) - 3;              
-                app.imgT.KurtosisInterSpikeInterval(idx) = kurtosis(interSpikeInterval,0) - 3;
-                app.imgT.KurtosisSynchronicity(idx) = kurtosis(syncPeaks,0) - 3;
-                app.imgT.KurtosisTimeToRise(idx) = kurtosis(spikeProperties(1,:),0) - 3;
-                app.imgT.KurtosisDuration25(idx) = kurtosis(spikeProperties(2,:),0) - 3;
-                app.imgT.KurtosisDuration50(idx) = kurtosis(spikeProperties(3,:),0) - 3;
-                app.imgT.KurtosisDuration75(idx) = kurtosis(spikeProperties(4,:),0) - 3;
-                app.imgT.KurtosisDuration90(idx) = kurtosis(spikeProperties(5,:),0) - 3;
-                app.imgT.KurtosisIntensity(idx) = kurtosis(tempInt,0) - 3;
-                app.imgT.KurtosisProminence(idx) = kurtosis(spikeProperties(6,:),0) - 3;
-                app.imgT.KurtosisTimeToDecay(idx) = kurtosis(spikeProperties(7,:),0) - 3;
-                app.imgT.KurtosisDecayTau(idx) = kurtosis(spikeProperties(8,:),0) - 3;
-                if bLabel
-                    app.imgT.KurtosisFrequencyPositive(idx) = kurtosis(cellFreq(labelFltr & cellFreq>0)) -3;
-                    app.imgT.KurtosisFrequencyNegative(idx) = kurtosis(cellFreq(~labelFltr & cellFreq>0)) -3;
-                    app.imgT.KurtosisISIPositive(idx) = kurtosis(cell2mat(ISI(labelFltr)')) -3;
-                    app.imgT.KurtosisISINegative(idx) = kurtosis(cell2mat(ISI(~labelFltr)')) -3;
-                    app.imgT.KurtosisTimeToRisePositive(idx) = kurtosis(cell2mat(sp(labelFltr,1)')) -3;
-                    app.imgT.KurtosisTimeToRiseNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,1)')) -3;
-                    app.imgT.KurtosisDuration25Positive(idx) = kurtosis(cell2mat(sp(labelFltr,2)')) -3;
-                    app.imgT.KurtosisDuration25Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,2)')) -3;
-                    app.imgT.KurtosisDuration50Positive(idx) = kurtosis(cell2mat(sp(labelFltr,3)')) -3;
-                    app.imgT.KurtosisDuration50Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,3)')) -3;
-                    app.imgT.KurtosisDuration75Positive(idx) = kurtosis(cell2mat(sp(labelFltr,4)')) -3;
-                    app.imgT.KurtosisDuration75Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,4)')) -3;
-                    app.imgT.KurtosisDuration90Positive(idx) = kurtosis(cell2mat(sp(labelFltr,5)')) -3;
-                    app.imgT.KurtosisDuration90Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,5)')) -3;
-                    app.imgT.KurtosisIntensityPositive(idx) = kurtosis(cell2mat(tInt(labelFltr)')) -3;
-                    app.imgT.KurtosisIntensityNegative(idx) = kurtosis(cell2mat(tInt(~labelFltr)')) -3;
-                    app.imgT.KurtosisProminencePositive(idx) = kurtosis(cell2mat(sp(labelFltr,6)')) -3;
-                    app.imgT.KurtosisProminenceNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,6)')) -3;
-                    app.imgT.KurtosisTimeToDecayPositive(idx) = kurtosis(cell2mat(sp(labelFltr,7)')) -3;
-                    app.imgT.KurtosisTimeToDecayNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,7)')) -3;
-                    app.imgT.KurtosisDecayTauPositive(idx) = kurtosis(cell2mat(sp(labelFltr,8)')) -3;
-                    app.imgT.KurtosisDecayTauNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,8)')) -3;
+                    % Calculate the network event with gaussian smoothing of the sum of the raster (similar to EvA)
+                    networkRaster = tempRast;
+                    networkRaster(~isnan(networkRaster)) = 1;
+                    networkRaster(isnan(networkRaster)) = 0;
+                    networkRaster = sum(networkRaster);
+                    smoothWindow = gausswin(10);
+                    smoothWindow = smoothWindow / sum(smoothWindow);
+                    networkRaster = filter(smoothWindow, 1, networkRaster);
+                    % Calculate the network frequency as the number of spikes that have > 80% of neurons firing
+                    [networkPeaks, networkLocs] = findpeaks(networkRaster, Fs, 'MinPeakProminence', 2.5);
+                    netThreshold = floor(sum(cellFreq>0) * (app.NetworkThresholdLabelEditField.Value / 100));
+                    networkFreq = sum(networkPeaks >= netThreshold) / totTime * 60;
+                    % Calculate the number of spikes outside the network activity
+                    networkLocs = ceil(networkLocs * Fs);
+                    spikeFilter = cell(nCell,1);
+                    for c = 1:nCell
+                        sStart = spikeRise{c}(basedRaster,:);
+                        sEnd = spikeDecay{c}(basedRaster,:);
+                        for s = 1:numel(sStart)
+                            for ns = 1:numel(networkLocs)
+                                isNetwork = sStart(s) <= networkLocs(ns) & sEnd(s) >= networkLocs(ns);
+                                if isNetwork
+                                    spikeFilter{c}(s) = 1;
+                                    break
+                                else
+                                    spikeFilter{c}(s) = 0;
+                                end
+                                
+                            end
+                        end
+                    end
+                    spikesInNetwork = cellfun(@sum, spikeFilter);
+                    spikesOutNetwork = cellfun(@numel, tempLoc) - spikesInNetwork;
+                    spikeIsolated = spikesOutNetwork ./ (spikesInNetwork+spikesOutNetwork) * 100;
+                    spikeFltr = logical(cell2mat(spikeFilter'));
+                    intIsolated = tempInt(spikeFltr);
+                    % Calculate the average synchronicity (based on the 90% duration)
+                    rasterDuration = tempRastPeak;
+                    rasterDuration(~isnan(rasterDuration)) = 1;
+                    rasterDuration(isnan(rasterDuration)) = 0;
+                    rasterDuration = sum(rasterDuration);
+                    rasterDuration = filter(smoothWindow, 1, rasterDuration);
+                    syncPeaks = findpeaks(rasterDuration, Fs, 'MinPeakProminence', 2.5);
+                    % Test: calculate the correlation based on the phase synchronization PMID: 21994056
+                    [phaseMatrix, phaseClusters] = phaseCorrelation(tempData, tempLoc);
+                    app.phiT{idx,1} = phaseMatrix;
+                    app.phiT{idx,2} = phaseClusters;
+                    % Check if there is a label for the ROIs
+                    if bLabel
+                        labelFltr = app.dicT.LabeledROIs{idx};
+                        ISI = cellfun(@(x) diff(x) / Fs, tempLoc, 'UniformOutput', false);
+                        sp = spikeProperties;
+                        tInt = app.imgT.SpikeIntensities{idx};
+                        positiveIsolated = spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr));
+                        negativeIsolated = spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr));
+                    end
+                    % Add the data according to where it needed to be detected
+                    app.imgT.SpikeProperties{idx} = [spikeProperties, spikeRise, spikeDecay];
+                    app.imgT.SpikeRaster{idx} = tempRastPeak;
+                    app.imgT.FWHMRaster{idx} = tempRast;
+                    app.imgT.NetworkRaster{idx} = networkRaster;
+                    app.imgT.SpikeInOut{idx} = [cellfun(@numel, tempLoc), spikesInNetwork, spikesOutNetwork];
+                    app.imgT.CellFrequency{idx} = cellFreq;
+                    app.imgT.NetworkFrequency(idx) = networkFreq;
+                    app.imgT.SilentCells(idx) = silentCells;
+                    if all(cellfun(@isempty, spikeProperties))
+                        app.imgT.KeepFOV(idx) = false;
+                        app.imgT{idx, 26:end} = NaN;
+                    else
+                        spikeProperties = cell2mat(spikeProperties(~all(cellfun(@isempty, spikeProperties),2),:)');
+                        % Add the descriptors: Mean
+                        app.imgT.MeanFrequency(idx) = mean(cellFreq(cellFreq>0), 'omitnan');
+                        app.imgT.MeanInterSpikeInterval(idx) = mean(interSpikeInterval, 'omitnan');
+                        app.imgT.MeanSynchronicity(idx) = mean(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
+                        app.imgT.MeanIsolated(idx) = mean(spikeIsolated, 'omitnan');
+                        app.imgT.MeanTimeToRise(idx) = mean(spikeProperties(1,:), 'omitnan');
+                        app.imgT.MeanDuration25(idx) = mean(spikeProperties(2,:), 'omitnan');
+                        app.imgT.MeanDuration50(idx) = mean(spikeProperties(3,:), 'omitnan');
+                        app.imgT.MeanDuration75(idx) = mean(spikeProperties(4,:), 'omitnan');
+                        app.imgT.MeanDuration90(idx) = mean(spikeProperties(5,:), 'omitnan');
+                        app.imgT.MeanIntensity(idx) = mean(tempInt, 'omitnan');
+                        app.imgT.MeanProminence(idx) = mean(spikeProperties(6,:), 'omitnan');
+                        app.imgT.MeanTimeToDecay(idx) = mean(spikeProperties(7,:), 'omitnan');
+                        app.imgT.MeanDecayTau(idx) = mean(spikeProperties(8,:), 'omitnan');
+                        app.imgT.MeanIntensityIsolated(idx) = mean(intIsolated, 'omitnan');
+                        if bLabel
+                            app.imgT.MeanFrequencyPositive(idx) = mean(cellFreq(labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.MeanFrequencyNegative(idx) = mean(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.MeanISIPositive(idx) = mean(cell2mat(ISI(labelFltr)'), 'omitnan');
+                            app.imgT.MeanISINegative(idx) = mean(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                            app.imgT.MeanIsolatedPositive(idx) = mean(positiveIsolated, 'omitnan');
+                            app.imgT.MeanIsolatedNegative(idx) = mean(negativeIsolated, 'omitnan');
+                            app.imgT.MeanTimeToRisePositive(idx) = mean(cell2mat(sp(labelFltr,1)'), 'omitnan');
+                            app.imgT.MeanTimeToRiseNegative(idx) = mean(cell2mat(sp(~labelFltr,1)'), 'omitnan');
+                            app.imgT.MeanDuration25Positive(idx) = mean(cell2mat(sp(labelFltr,2)'), 'omitnan');
+                            app.imgT.MeanDuration25Negative(idx) = mean(cell2mat(sp(~labelFltr,2)'), 'omitnan');
+                            app.imgT.MeanDuration50Positive(idx) = mean(cell2mat(sp(labelFltr,3)'), 'omitnan');
+                            app.imgT.MeanDuration50Negative(idx) = mean(cell2mat(sp(~labelFltr,3)'), 'omitnan');
+                            app.imgT.MeanDuration75Positive(idx) = mean(cell2mat(sp(labelFltr,4)'), 'omitnan');
+                            app.imgT.MeanDuration75Negative(idx) = mean(cell2mat(sp(~labelFltr,4)'), 'omitnan');
+                            app.imgT.MeanDuration90Positive(idx) = mean(cell2mat(sp(labelFltr,5)'), 'omitnan');
+                            app.imgT.MeanDuration90Negative(idx) = mean(cell2mat(sp(~labelFltr,5)'), 'omitnan');
+                            app.imgT.MeanIntensityPositive(idx) = mean(cell2mat(tInt(labelFltr)'), 'omitnan');
+                            app.imgT.MeanIntensityNegative(idx) = mean(cell2mat(tInt(~labelFltr)'), 'omitnan');
+                            app.imgT.MeanProminencePositive(idx) = mean(cell2mat(sp(labelFltr,6)'), 'omitnan');
+                            app.imgT.MeanProminenceNegative(idx) = mean(cell2mat(sp(~labelFltr,6)'), 'omitnan');
+                            app.imgT.MeanTimeToDecayPositive(idx) = mean(cell2mat(sp(labelFltr,7)'), 'omitnan');
+                            app.imgT.MeanTimeToDecayNegative(idx) = mean(cell2mat(sp(~labelFltr,7)'), 'omitnan');
+                            app.imgT.MeanDecayTauPositive(idx) = mean(cell2mat(sp(labelFltr,8)'), 'omitnan');
+                            app.imgT.MeanDecayTauNegative(idx) = mean(cell2mat(sp(~labelFltr,8)'), 'omitnan');
+                        end
+                        % Add the descriptors: Median
+                        app.imgT.MedianFrequency(idx) = median(cellFreq(cellFreq>0), 'omitnan');
+                        app.imgT.MedianInterSpikeInterval(idx) = median(interSpikeInterval, 'omitnan');
+                        app.imgT.MedianSynchronicity(idx) = median(ceil(syncPeaks), 'omitnan') / sum(cellFreq>0) * 100;
+                        app.imgT.MedianIsolated(idx) = median(spikeIsolated, 'omitnan');
+                        app.imgT.MedianTimeToRise(idx) = median(spikeProperties(1,:), 'omitnan');
+                        app.imgT.MedianDuration25(idx) = median(spikeProperties(2,:), 'omitnan');
+                        app.imgT.MedianDuration50(idx) = median(spikeProperties(3,:), 'omitnan');
+                        app.imgT.MedianDuration75(idx) = median(spikeProperties(4,:), 'omitnan');
+                        app.imgT.MedianDuration90(idx) = median(spikeProperties(5,:), 'omitnan');
+                        app.imgT.MedianIntensity(idx) = median(tempInt, 'omitnan');
+                        app.imgT.MedianProminence(idx) = median(spikeProperties(6,:), 'omitnan');
+                        app.imgT.MedianTimeToDecay(idx) = median(spikeProperties(7,:), 'omitnan');
+                        app.imgT.MedianDecayTau(idx) = median(spikeProperties(8,:), 'omitnan');
+                        app.imgT.MedianIntensityIsolated(idx) = median(intIsolated, 'omitnan');
+                        if bLabel
+                            app.imgT.MedianFrequencyPositive(idx) = median(cellFreq(labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.MedianFrequencyNegative(idx) = median(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.MedianISIPositive(idx) = median(cell2mat(ISI(labelFltr)'), 'omitnan');
+                            app.imgT.MedianISINegative(idx) = median(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                            app.imgT.MedianIsolatedPositive(idx) = median(positiveIsolated, 'omitnan');
+                            app.imgT.MedianIsolatedNegative(idx) = median(negativeIsolated, 'omitnan');
+                            app.imgT.MedianTimeToRisePositive(idx) = median(cell2mat(sp(labelFltr,1)'), 'omitnan');
+                            app.imgT.MedianTimeToRiseNegative(idx) = median(cell2mat(sp(~labelFltr,1)'), 'omitnan');
+                            app.imgT.MedianDuration25Positive(idx) = median(cell2mat(sp(labelFltr,2)'), 'omitnan');
+                            app.imgT.MedianDuration25Negative(idx) = median(cell2mat(sp(~labelFltr,2)'), 'omitnan');
+                            app.imgT.MedianDuration50Positive(idx) = median(cell2mat(sp(labelFltr,3)'), 'omitnan');
+                            app.imgT.MedianDuration50Negative(idx) = median(cell2mat(sp(~labelFltr,3)'), 'omitnan');
+                            app.imgT.MedianDuration75Positive(idx) = median(cell2mat(sp(labelFltr,4)'), 'omitnan');
+                            app.imgT.MedianDuration75Negative(idx) = median(cell2mat(sp(~labelFltr,4)'), 'omitnan');
+                            app.imgT.MedianDuration90Positive(idx) = median(cell2mat(sp(labelFltr,5)'), 'omitnan');
+                            app.imgT.MedianDuration90Negative(idx) = median(cell2mat(sp(~labelFltr,5)'), 'omitnan');
+                            app.imgT.MedianIntensityPositive(idx) = median(cell2mat(tInt(labelFltr)'), 'omitnan');
+                            app.imgT.MedianIntensityNegative(idx) = median(cell2mat(tInt(~labelFltr)'), 'omitnan');
+                            app.imgT.MedianProminencePositive(idx) = median(cell2mat(sp(labelFltr,6)'), 'omitnan');
+                            app.imgT.MedianProminenceNegative(idx) = median(cell2mat(sp(~labelFltr,6)'), 'omitnan');
+                            app.imgT.MedianTimeToDecayPositive(idx) = median(cell2mat(sp(labelFltr,7)'), 'omitnan');
+                            app.imgT.MedianTimeToDecayNegative(idx) = median(cell2mat(sp(~labelFltr,7)'), 'omitnan');
+                            app.imgT.MedianDecayTauPositive(idx) = median(cell2mat(sp(labelFltr,8)'), 'omitnan');
+                            app.imgT.MedianDecayTauNegative(idx) = median(cell2mat(sp(~labelFltr,8)'), 'omitnan');
+                        end
+                        % Add the descriptors: Coefficient of variation
+                        app.imgT.CoVFrequency(idx) = std(cellFreq(cellFreq>0), 'omitnan') / mean(cellFreq(cellFreq>0), 'omitnan');
+                        app.imgT.CoVInterSpikeInterval(idx) = std(interSpikeInterval, 'omitnan') / mean(interSpikeInterval, 'omitnan');
+                        app.imgT.CoVSynchronicity(idx) = std(syncPeaks, 'omitnan') / mean(syncPeaks, 'omitnan');
+                        app.imgT.CoVIsolated(idx) = std(spikeIsolated, 'omitnan') / mean(spikeIsolated, 'omitnan');
+                        app.imgT.CoVTimeToRise(idx) = std(spikeProperties(1,:), 'omitnan') / mean(spikeProperties(1,:), 'omitnan');
+                        app.imgT.CoVDuration25(idx) = std(spikeProperties(2,:), 'omitnan') / mean(spikeProperties(2,:), 'omitnan');
+                        app.imgT.CoVDuration50(idx) = std(spikeProperties(3,:), 'omitnan') / mean(spikeProperties(3,:), 'omitnan');
+                        app.imgT.CoVDuration75(idx) = std(spikeProperties(4,:), 'omitnan') / mean(spikeProperties(4,:), 'omitnan');
+                        app.imgT.CoVDuration90(idx) = std(spikeProperties(5,:), 'omitnan') / mean(spikeProperties(5,:), 'omitnan');
+                        app.imgT.CoVIntensity(idx) = std(tempInt, 'omitnan') / mean(tempInt, 'omitnan');
+                        app.imgT.CoVProminence(idx) = std(spikeProperties(6,:), 'omitnan') / mean(spikeProperties(6,:), 'omitnan');
+                        app.imgT.CoVTimeToDecay(idx) = std(spikeProperties(7,:), 'omitnan') / mean(spikeProperties(7,:), 'omitnan');
+                        app.imgT.CoVDecayTau(idx) = std(spikeProperties(8,:), 'omitnan') / mean(spikeProperties(8,:), 'omitnan');
+                        app.imgT.CoVIntensityIsolated(idx) = std(intIsolated, 'omitnan') / mean(intIsolated, 'omitnan');
+                        % Add the descriptors: Quantile coefficient of dispersion
+                        app.imgT.QCDFrequency(idx) = qcd(cellFreq(cellFreq>0));
+                        app.imgT.QCDInterSpikeInterval(idx) = qcd(interSpikeInterval);
+                        app.imgT.QCDSynchronicity(idx) = qcd(syncPeaks);
+                        app.imgT.QCDIsolated(idx) = qcd(spikeIsolated);
+                        app.imgT.QCDTimeToRise(idx) = qcd(spikeProperties(1,:));
+                        app.imgT.QCDDuration25(idx) = qcd(spikeProperties(2,:));
+                        app.imgT.QCDDuration50(idx) = qcd(spikeProperties(3,:));
+                        app.imgT.QCDDuration75(idx) = qcd(spikeProperties(4,:));
+                        app.imgT.QCDDuration90(idx) = qcd(spikeProperties(5,:));
+                        app.imgT.QCDIntensity(idx) = qcd(tempInt);
+                        app.imgT.QCDProminence(idx) = qcd(spikeProperties(6,:));
+                        app.imgT.QCDTimeToDecay(idx) = qcd(spikeProperties(7,:));
+                        app.imgT.QCDDecayTau(idx) = qcd(spikeProperties(8,:));
+                        app.imgT.QCDIntensityIsolated(idx) = qcd(intIsolated);
+                        if bLabel
+                            app.imgT.QCDFrequencyPositive(idx) = qcd(cellFreq(labelFltr & cellFreq>0));
+                            app.imgT.QCDFrequencyNegative(idx) = qcd(cellFreq(~labelFltr & cellFreq>0));
+                            app.imgT.QCDISIPositive(idx) = qcd(cell2mat(ISI(labelFltr)'));
+                            app.imgT.QCDISINegative(idx) = qcd(cell2mat(ISI(~labelFltr)'));
+                            app.imgT.QCDIsolatedPositive(idx) = qcd(positiveIsolated);
+                            app.imgT.QCDIsolatedNegative(idx) = qcd(negativeIsolated);
+                            app.imgT.QCDTimeToRisePositive(idx) = qcd(cell2mat(sp(labelFltr,1)'));
+                            app.imgT.QCDTimeToRiseNegative(idx) = qcd(cell2mat(sp(~labelFltr,1)'));
+                            app.imgT.QCDDuration25Positive(idx) = qcd(cell2mat(sp(labelFltr,2)'));
+                            app.imgT.QCDDuration25Negative(idx) = qcd(cell2mat(sp(~labelFltr,2)'));
+                            app.imgT.QCDDuration50Positive(idx) = qcd(cell2mat(sp(labelFltr,3)'));
+                            app.imgT.QCDDuration50Negative(idx) = qcd(cell2mat(sp(~labelFltr,3)'));
+                            app.imgT.QCDDuration75Positive(idx) = qcd(cell2mat(sp(labelFltr,4)'));
+                            app.imgT.QCDDuration75Negative(idx) = qcd(cell2mat(sp(~labelFltr,4)'));
+                            app.imgT.QCDDuration90Positive(idx) = qcd(cell2mat(sp(labelFltr,5)'));
+                            app.imgT.QCDDuration90Negative(idx) = qcd(cell2mat(sp(~labelFltr,5)'));
+                            app.imgT.QCDIntensityPositive(idx) = qcd(cell2mat(tInt(labelFltr)'));
+                            app.imgT.QCDIntensityNegative(idx) = qcd(cell2mat(tInt(~labelFltr)'));
+                            app.imgT.QCDProminencePositive(idx) = qcd(cell2mat(sp(labelFltr,6)'));
+                            app.imgT.QCDProminenceNegative(idx) = qcd(cell2mat(sp(~labelFltr,6)'));
+                            app.imgT.QCDTimeToDecayPositive(idx) = qcd(cell2mat(sp(labelFltr,7)'));
+                            app.imgT.QCDTimeToDecayNegative(idx) = qcd(cell2mat(sp(~labelFltr,7)'));
+                            app.imgT.QCDDecayTauPositive(idx) = qcd(cell2mat(sp(labelFltr,8)'));
+                            app.imgT.QCDDecayTauNegative(idx) = qcd(cell2mat(sp(~labelFltr,8)'));
+                        end
+                        % Add the descriptors: Variance
+                        app.imgT.VarianceFrequency(idx) = var(cellFreq(cellFreq>0), 'omitnan');
+                        app.imgT.VarianceInterSpikeInterval(idx) = var(interSpikeInterval, 'omitnan');
+                        app.imgT.VarianceSynchronicity(idx) = var(syncPeaks, 'omitnan');
+                        app.imgT.VarianceIsolated(idx) = var(spikeIsolated, 'omitnan');
+                        app.imgT.VarianceTimeToRise(idx) = var(spikeProperties(1,:), 'omitnan');
+                        app.imgT.VarianceDuration25(idx) = var(spikeProperties(2,:), 'omitnan');
+                        app.imgT.VarianceDuration50(idx) = var(spikeProperties(3,:), 'omitnan');
+                        app.imgT.VarianceDuration75(idx) = var(spikeProperties(4,:), 'omitnan');
+                        app.imgT.VarianceDuration90(idx) = var(spikeProperties(5,:), 'omitnan');
+                        app.imgT.VarianceIntensity(idx) = var(tempInt, 'omitnan');
+                        app.imgT.VarianceProminence(idx) = var(spikeProperties(6,:), 'omitnan');
+                        app.imgT.VarianceTimeToDecay(idx) = var(spikeProperties(7,:), 'omitnan');
+                        app.imgT.VarianceDecayTau(idx) = var(spikeProperties(8,:), 'omitnan');
+                        app.imgT.VarianceIntensityIsolated(idx) = var(intIsolated, 'omitnan');
+                        if bLabel
+                            app.imgT.VarianceFrequencyPositive(idx) = var(cellFreq(labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.VarianceFrequencyNegative(idx) = var(cellFreq(~labelFltr & cellFreq>0), 'omitnan');
+                            app.imgT.VarianceISIPositive(idx) = var(cell2mat(ISI(labelFltr)'), 'omitnan');
+                            app.imgT.VarianceISINegative(idx) = var(cell2mat(ISI(~labelFltr)'), 'omitnan');
+                            app.imgT.VarianceIsolatedPositive(idx) = var(positiveIsolated);
+                            app.imgT.VarianceIsolatedNegative(idx) = var(negativeIsolated);
+                            app.imgT.VarianceIsolatedPositive(idx) = var(spikesOutNetwork(labelFltr) ./ (spikesInNetwork(labelFltr)+spikesOutNetwork(labelFltr)), 'omitnan');
+                            app.imgT.VarianceIsolatedNegative(idx) = var(spikesOutNetwork(~labelFltr) ./ (spikesInNetwork(~labelFltr)+spikesOutNetwork(~labelFltr)), 'omitnan');
+                            app.imgT.VarianceTimeToRisePositive(idx) = var(cell2mat(sp(labelFltr,1)'), 'omitnan');
+                            app.imgT.VarianceTimeToRiseNegative(idx) = var(cell2mat(sp(~labelFltr,1)'), 'omitnan');
+                            app.imgT.VarianceDuration25Positive(idx) = var(cell2mat(sp(labelFltr,2)'), 'omitnan');
+                            app.imgT.VarianceDuration25Negative(idx) = var(cell2mat(sp(~labelFltr,2)'), 'omitnan');
+                            app.imgT.VarianceDuration50Positive(idx) = var(cell2mat(sp(labelFltr,3)'), 'omitnan');
+                            app.imgT.VarianceDuration50Negative(idx) = var(cell2mat(sp(~labelFltr,3)'), 'omitnan');
+                            app.imgT.VarianceDuration75Positive(idx) = var(cell2mat(sp(labelFltr,4)'), 'omitnan');
+                            app.imgT.VarianceDuration75Negative(idx) = var(cell2mat(sp(~labelFltr,4)'), 'omitnan');
+                            app.imgT.VarianceDuration90Positive(idx) = var(cell2mat(sp(labelFltr,5)'), 'omitnan');
+                            app.imgT.VarianceDuration90Negative(idx) = var(cell2mat(sp(~labelFltr,5)'), 'omitnan');
+                            app.imgT.VarianceIntensityPositive(idx) = var(cell2mat(tInt(labelFltr)'), 'omitnan');
+                            app.imgT.VarianceIntensityNegative(idx) = var(cell2mat(tInt(~labelFltr)'), 'omitnan');
+                            app.imgT.VarianceProminencePositive(idx) = var(cell2mat(sp(labelFltr,6)'), 'omitnan');
+                            app.imgT.VarianceProminenceNegative(idx) = var(cell2mat(sp(~labelFltr,6)'), 'omitnan');
+                            app.imgT.VarianceTimeToDecayPositive(idx) = var(cell2mat(sp(labelFltr,7)'), 'omitnan');
+                            app.imgT.VarianceTimeToDecayNegative(idx) = var(cell2mat(sp(~labelFltr,7)'), 'omitnan');
+                            app.imgT.VarianceDecayTauPositive(idx) = var(cell2mat(sp(labelFltr,8)'), 'omitnan');
+                            app.imgT.VarianceDecayTauNegative(idx) = var(cell2mat(sp(~labelFltr,8)'), 'omitnan');
+                        end
+                        % Add the descriptors: Skewness
+                        app.imgT.SkewnessFrequency(idx) = skewness(cellFreq(cellFreq>0),0);
+                        app.imgT.SkewnessInterSpikeInterval(idx) = skewness(interSpikeInterval,0);
+                        app.imgT.SkewnessSynchronicity(idx) = skewness(syncPeaks,0);
+                        app.imgT.SkewnessTimeToRise(idx) = skewness(spikeProperties(1,:),0);
+                        app.imgT.SkewnessDuration25(idx) = skewness(spikeProperties(2,:),0);
+                        app.imgT.SkewnessDuration50(idx) = skewness(spikeProperties(3,:),0);
+                        app.imgT.SkewnessDuration75(idx) = skewness(spikeProperties(4,:),0);
+                        app.imgT.SkewnessDuration90(idx) = skewness(spikeProperties(5,:),0);
+                        app.imgT.SkewnessIntensity(idx) = skewness(tempInt,0);
+                        app.imgT.SkewnessProminence(idx) = skewness(spikeProperties(6,:),0);
+                        app.imgT.SkewnessTimeToDecay(idx) = skewness(spikeProperties(7,:),0);
+                        app.imgT.SkewnessDecayTau(idx) = skewness(spikeProperties(8,:),0);
+                        if bLabel
+                            app.imgT.SkewnessFrequencyPositive(idx) = skewness(cellFreq(labelFltr & cellFreq>0));
+                            app.imgT.SkewnessFrequencyNegative(idx) = skewness(cellFreq(~labelFltr & cellFreq>0));
+                            app.imgT.SkewnessISIPositive(idx) = skewness(cell2mat(ISI(labelFltr)'));
+                            app.imgT.SkewnessISINegative(idx) = skewness(cell2mat(ISI(~labelFltr)'));
+                            app.imgT.SkewnessTimeToRisePositive(idx) = skewness(cell2mat(sp(labelFltr,1)'));
+                            app.imgT.SkewnessTimeToRiseNegative(idx) = skewness(cell2mat(sp(~labelFltr,1)'));
+                            app.imgT.SkewnessDuration25Positive(idx) = skewness(cell2mat(sp(labelFltr,2)'));
+                            app.imgT.SkewnessDuration25Negative(idx) = skewness(cell2mat(sp(~labelFltr,2)'));
+                            app.imgT.SkewnessDuration50Positive(idx) = skewness(cell2mat(sp(labelFltr,3)'));
+                            app.imgT.SkewnessDuration50Negative(idx) = skewness(cell2mat(sp(~labelFltr,3)'));
+                            app.imgT.SkewnessDuration75Positive(idx) = skewness(cell2mat(sp(labelFltr,4)'));
+                            app.imgT.SkewnessDuration75Negative(idx) = skewness(cell2mat(sp(~labelFltr,4)'));
+                            app.imgT.SkewnessDuration90Positive(idx) = skewness(cell2mat(sp(labelFltr,5)'));
+                            app.imgT.SkewnessDuration90Negative(idx) = skewness(cell2mat(sp(~labelFltr,5)'));
+                            app.imgT.SkewnessIntensityPositive(idx) = skewness(cell2mat(tInt(labelFltr)'));
+                            app.imgT.SkewnessIntensityNegative(idx) = skewness(cell2mat(tInt(~labelFltr)'));
+                            app.imgT.SkewnessProminencePositive(idx) = skewness(cell2mat(sp(labelFltr,6)'));
+                            app.imgT.SkewnessProminenceNegative(idx) = skewness(cell2mat(sp(~labelFltr,6)'));
+                            app.imgT.SkewnessTimeToDecayPositive(idx) = skewness(cell2mat(sp(labelFltr,7)'));
+                            app.imgT.SkewnessTimeToDecayNegative(idx) = skewness(cell2mat(sp(~labelFltr,7)'));
+                            app.imgT.SkewnessDecayTauPositive(idx) = skewness(cell2mat(sp(labelFltr,8)'));
+                            app.imgT.SkewnessDecayTauNegative(idx) = skewness(cell2mat(sp(~labelFltr,8)'));
+                        end
+                        % Add the descriptors: Kurtosis
+                        app.imgT.KurtosisFrequency(idx) = kurtosis(cellFreq(cellFreq>0),0) - 3;
+                        app.imgT.KurtosisInterSpikeInterval(idx) = kurtosis(interSpikeInterval,0) - 3;
+                        app.imgT.KurtosisSynchronicity(idx) = kurtosis(syncPeaks,0) - 3;
+                        app.imgT.KurtosisTimeToRise(idx) = kurtosis(spikeProperties(1,:),0) - 3;
+                        app.imgT.KurtosisDuration25(idx) = kurtosis(spikeProperties(2,:),0) - 3;
+                        app.imgT.KurtosisDuration50(idx) = kurtosis(spikeProperties(3,:),0) - 3;
+                        app.imgT.KurtosisDuration75(idx) = kurtosis(spikeProperties(4,:),0) - 3;
+                        app.imgT.KurtosisDuration90(idx) = kurtosis(spikeProperties(5,:),0) - 3;
+                        app.imgT.KurtosisIntensity(idx) = kurtosis(tempInt,0) - 3;
+                        app.imgT.KurtosisProminence(idx) = kurtosis(spikeProperties(6,:),0) - 3;
+                        app.imgT.KurtosisTimeToDecay(idx) = kurtosis(spikeProperties(7,:),0) - 3;
+                        app.imgT.KurtosisDecayTau(idx) = kurtosis(spikeProperties(8,:),0) - 3;
+                        if bLabel
+                            app.imgT.KurtosisFrequencyPositive(idx) = kurtosis(cellFreq(labelFltr & cellFreq>0)) -3;
+                            app.imgT.KurtosisFrequencyNegative(idx) = kurtosis(cellFreq(~labelFltr & cellFreq>0)) -3;
+                            app.imgT.KurtosisISIPositive(idx) = kurtosis(cell2mat(ISI(labelFltr)')) -3;
+                            app.imgT.KurtosisISINegative(idx) = kurtosis(cell2mat(ISI(~labelFltr)')) -3;
+                            app.imgT.KurtosisTimeToRisePositive(idx) = kurtosis(cell2mat(sp(labelFltr,1)')) -3;
+                            app.imgT.KurtosisTimeToRiseNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,1)')) -3;
+                            app.imgT.KurtosisDuration25Positive(idx) = kurtosis(cell2mat(sp(labelFltr,2)')) -3;
+                            app.imgT.KurtosisDuration25Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,2)')) -3;
+                            app.imgT.KurtosisDuration50Positive(idx) = kurtosis(cell2mat(sp(labelFltr,3)')) -3;
+                            app.imgT.KurtosisDuration50Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,3)')) -3;
+                            app.imgT.KurtosisDuration75Positive(idx) = kurtosis(cell2mat(sp(labelFltr,4)')) -3;
+                            app.imgT.KurtosisDuration75Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,4)')) -3;
+                            app.imgT.KurtosisDuration90Positive(idx) = kurtosis(cell2mat(sp(labelFltr,5)')) -3;
+                            app.imgT.KurtosisDuration90Negative(idx) = kurtosis(cell2mat(sp(~labelFltr,5)')) -3;
+                            app.imgT.KurtosisIntensityPositive(idx) = kurtosis(cell2mat(tInt(labelFltr)')) -3;
+                            app.imgT.KurtosisIntensityNegative(idx) = kurtosis(cell2mat(tInt(~labelFltr)')) -3;
+                            app.imgT.KurtosisProminencePositive(idx) = kurtosis(cell2mat(sp(labelFltr,6)')) -3;
+                            app.imgT.KurtosisProminenceNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,6)')) -3;
+                            app.imgT.KurtosisTimeToDecayPositive(idx) = kurtosis(cell2mat(sp(labelFltr,7)')) -3;
+                            app.imgT.KurtosisTimeToDecayNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,7)')) -3;
+                            app.imgT.KurtosisDecayTauPositive(idx) = kurtosis(cell2mat(sp(labelFltr,8)')) -3;
+                            app.imgT.KurtosisDecayTauNegative(idx) = kurtosis(cell2mat(sp(~labelFltr,8)')) -3;
+                        end
+                    end
                 end
             end
             close(hWait);
@@ -2352,7 +2364,9 @@ classdef sCaSpA < matlab.apps.AppBase
             end
             tempExp = app.dicT.ExperimentID{tempDIC};
             tempRoi = app.dicT.RoiSet{tempDIC};
-            app.dicT.LabeledROIs{tempDIC} = false(size(tempRoi,1),1);
+            if ~any(app.dicT.LabeledROIs{tempDIC})
+                app.dicT.LabeledROIs{tempDIC} = false(size(tempRoi,1),1);
+            end
             % Then load the each stack from this DIC
             imgFltr = find(contains(app.imgT.ExperimentID, tempExp));
             nImages = numel(imgFltr);
