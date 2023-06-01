@@ -179,10 +179,11 @@ classdef sCaSpA < matlab.apps.AppBase
         %                - 230320 = 1 -> add a new column for labeling the ROIs, one filter for the trace, and one filter for the FOV
         %                - 230405 = 2 -> Implemented loading *.nd2 files
         %                - 230425 = 3 -> Start implementation for cell clustering and out of network analysis
-        dailyBuilt = 2;
+        dailyBuilt = 3;
         % bug fixes      - 230425 = 0 -> Several bug fixes and new implementations
         %                - 230504 = 1 -> Add batch import for movies
         %                - 230517 = 2 -> Performance improvements
+        %                - 230601 = 3 -> More flexible filename recognition
         
     end
     
@@ -212,8 +213,9 @@ classdef sCaSpA < matlab.apps.AppBase
                     app.isBioFormat = false;
                 end
                 % Populate the DIC table
-                dicFltr = contains({imgFiles.name}, app.options.StillCondition)';
-                nameParts = regexp({imgFiles.name}, '_', 'split')';
+                fileNames = regexprep({imgFiles.name},sprintf('.%s',app.options.Microscope),'');
+                dicFltr = contains(fileNames, app.options.StillCondition)';
+                nameParts = regexp(fileNames, '_', 'split')';
                 if isempty(dicFltr)
                     errordlg('No files have the selected "Still Condition".\nPlease adjust and rety', 'Loading failed');
                     return
@@ -221,19 +223,22 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempT = table;
                 tempT.Filename = fullfile({imgFiles(dicFltr).folder}', {imgFiles(dicFltr).name}');
                 tempT.CellID = cellfun(@(x) x(1:end-4), {imgFiles(dicFltr).name}', 'UniformOutput', false);
-                % Check if there is extra labels between the DIC and the movie
-                dicPartsNumber = numel(nameParts{find(dicFltr,1)});
-                moviePartsNumber = numel(nameParts{find(~dicFltr,1)});
-                if dicPartsNumber == moviePartsNumber+1
-                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{4}), nameParts, 'UniformOutput', false);
-                elseif dicPartsNumber == moviePartsNumber
-                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{3}), nameParts, 'UniformOutput', false);
-                else
-                    close(hWait)
-                    togglePointer(app)
-                    uialert(app.UIFigure, 'Still and timelapse names do not match.', 'Invalid names');
-                    return
-                end
+                % Try to have a bit more flexible check for the experiments. The first part is ALWAYS the date
+                %dicPartsNumber = numel(nameParts{find(dicFltr,1)});
+                posIdx = cellfun(@(x) contains(x, {'Well', 'cs'}, 'IgnoreCase', true), nameParts, 'UniformOutput', false);
+                %dicIdx = find(contains(nameParts{1}, app.options.StillCondition));
+                %moviePartsNumber = numel(nameParts{find(~dicFltr,1)});
+                %if dicPartsNumber == moviePartsNumber+1
+                %    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{4}), nameParts, 'UniformOutput', false);
+                %elseif dicPartsNumber == moviePartsNumber
+                %    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{3}), nameParts, 'UniformOutput', false);
+                %else
+                %    close(hWait)
+                %    togglePointer(app)
+                %    uialert(app.UIFigure, 'Still and timelapse names do not match.', 'Invalid names');
+                %    return
+                %end
+                expIDs = cellfun(@(x,y) sprintf('%s_%s', x{1}, x{y}), nameParts, posIdx, 'UniformOutput', false);
                 tempT.ExperimentID = expIDs(dicFltr);
                 switch app.options.Microscope
                     case 'nd2'
@@ -287,18 +292,22 @@ classdef sCaSpA < matlab.apps.AppBase
                 tempT(2:end,1) = fullfile({imgFiles(imgFltr).folder}, {imgFiles(imgFltr).name});
                 tempT(2:end,2) = cellfun(@(x) x(1:end-4), {imgFiles(imgFltr).name}, 'UniformOutput', false);
                 imgIDs = nameParts(imgFltr);
+                dateIdx = cellfun(@(x) [true, false(1,numel(x)-1)], imgIDs, 'UniformOutput', false);
+                condIdx = cellfun(@(x) [false, true, false(1,numel(x)-2)], imgIDs, 'UniformOutput', false);
+                wellIdx = cellfun(@(x) contains(x, {'Well', 'cs'}, 'IgnoreCase', true), imgIDs, 'UniformOutput', false);
+                recIdx = cellfun(@(x,y,z) ~any([x;y;z]), dateIdx, condIdx, wellIdx, 'UniformOutput', false);
                 % Check the informations on the name. In case there is something wrong, ask the user
-                if numel(imgIDs{1}) ~= 4
+                if numel(imgIDs{1}) ~= 4 || ~any(recIdx{1})
                     warndlg('name missmatch, but I don''t know what to do');
                 end
                 for i = 1:numel(imgFltr)
                     hWait.Value = i/numel(imgFltr);
                     hWait.Message = sprintf('Loading movie data %0.2f%%', i/numel(imgFltr)*100);
-                    tempT{i+1,3} = weeknum(datetime(imgIDs{i}{1}, 'InputFormat', 'yyMMdd'));
-                    tempT{i+1,4} = imgIDs{i}{3};
-                    tempT{i+1,5} = imgIDs{i}{4};
-                    tempT{i+1,6} = imgIDs{i}{2};
-                    tempT{i+1,7} = [imgIDs{i}{1} '_' imgIDs{i}{3}]; % use to link the DIC to the movies
+                    tempT{i+1,3} = weeknum(datetime(imgIDs{i}{dateIdx{i}}, 'InputFormat', 'yyMMdd'));
+                    tempT{i+1,4} = imgIDs{i}{wellIdx{i}};
+                    tempT{i+1,5} = imgIDs{i}{recIdx{i}};
+                    tempT{i+1,6} = imgIDs{i}{condIdx{i}};
+                    tempT{i+1,7} = [imgIDs{i}{dateIdx{i}} '_' imgIDs{i}{wellIdx{i}}]; % use to link the DIC to the movies
                     % get the imaging period (T) and frequency (Fs) from the file
                     switch app.options.Microscope
                         case 'nd2'
