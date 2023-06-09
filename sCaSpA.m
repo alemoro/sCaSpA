@@ -226,6 +226,13 @@ classdef sCaSpA < matlab.apps.AppBase
                 % Try to have a bit more flexible check for the experiments. The first part is ALWAYS the date
                 %dicPartsNumber = numel(nameParts{find(dicFltr,1)});
                 posIdx = cellfun(@(x) contains(x, {'Well', 'cs'}, 'IgnoreCase', true), nameParts, 'UniformOutput', false);
+                if sum(posIdx{1}) ~= 1
+                    dicIdx = find(dicFltr,1);
+                    wellPosition = listdlg('PromptString', 'Please select the WellID', 'ListString', nameParts{dicIdx});
+                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{end}), nameParts, 'UniformOutput', false);
+                else
+                    expIDs = cellfun(@(x,y) sprintf('%s_%s', x{1}, x{y}), nameParts, posIdx, 'UniformOutput', false);
+                end
                 %dicIdx = find(contains(nameParts{1}, app.options.StillCondition));
                 %moviePartsNumber = numel(nameParts{find(~dicFltr,1)});
                 %if dicPartsNumber == moviePartsNumber+1
@@ -238,7 +245,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 %    uialert(app.UIFigure, 'Still and timelapse names do not match.', 'Invalid names');
                 %    return
                 %end
-                expIDs = cellfun(@(x,y) sprintf('%s_%s', x{1}, x{y}), nameParts, posIdx, 'UniformOutput', false);
+                
                 tempT.ExperimentID = expIDs(dicFltr);
                 switch app.options.Microscope
                     case 'nd2'
@@ -295,6 +302,12 @@ classdef sCaSpA < matlab.apps.AppBase
                 dateIdx = cellfun(@(x) [true, false(1,numel(x)-1)], imgIDs, 'UniformOutput', false);
                 condIdx = cellfun(@(x) [false, true, false(1,numel(x)-2)], imgIDs, 'UniformOutput', false);
                 wellIdx = cellfun(@(x) contains(x, {'Well', 'cs'}, 'IgnoreCase', true), imgIDs, 'UniformOutput', false);
+                if sum(wellIdx{1}) ~= 1
+                    wellPosition = listdlg('PromptString', 'Please select the WellID', 'ListString', imgIDs{1});
+                    wellIdxs = false(1, numel(imgIDs(1)));
+                    wellIdxs(wellPosition) = true;
+                    wellIdx = repmat({wellIdxs}, length(imgIDs),1);
+                end
                 recIdx = cellfun(@(x,y,z) ~any([x;y;z]), dateIdx, condIdx, wellIdx, 'UniformOutput', false);
                 % Check the informations on the name. In case there is something wrong, ask the user
                 if numel(imgIDs{1}) ~= 4 || ~any(recIdx{1})
@@ -2535,7 +2548,11 @@ classdef sCaSpA < matlab.apps.AppBase
             app.TraceToUseDropDown.Value = app.options.DetectTrace;
             app.ROIShapeDropDown.Value = app.options.RoiShape;
             app.ROISizepxsEditField.Value = app.options.RoiSize;
-            app.ROIExpectedEditField.Value = app.options.ExpectedRoi;
+            if isfield(app.options, 'ExpectedRoi')
+                app.ROIExpectedEditField.Value = app.options.ExpectedRoi;
+            else
+                app.ROIExpectedEditField.Value = 10;
+            end
             app.RegistrationCheckBox.Value = app.options.Registration;
             app.ReferenceConditionEditField.Value = app.options.Reference;
             app.DetrendingMethodDropDown.Value = app.options.Detrending;
