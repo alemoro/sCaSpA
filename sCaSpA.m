@@ -229,7 +229,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 if sum(posIdx{1}) ~= 1
                     dicIdx = find(dicFltr,1);
                     wellPosition = listdlg('PromptString', 'Please select the WellID', 'ListString', nameParts{dicIdx});
-                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{end}), nameParts, 'UniformOutput', false);
+                    expIDs = cellfun(@(x) sprintf('%s_%s', x{1}, x{wellPosition}), nameParts, 'UniformOutput', false);
                 else
                     expIDs = cellfun(@(x,y) sprintf('%s_%s', x{1}, x{y}), nameParts, posIdx, 'UniformOutput', false);
                 end
@@ -304,7 +304,7 @@ classdef sCaSpA < matlab.apps.AppBase
                 wellIdx = cellfun(@(x) contains(x, {'Well', 'cs'}, 'IgnoreCase', true), imgIDs, 'UniformOutput', false);
                 if sum(wellIdx{1}) ~= 1
                     wellPosition = listdlg('PromptString', 'Please select the WellID', 'ListString', imgIDs{1});
-                    wellIdxs = false(1, numel(imgIDs(1)));
+                    wellIdxs = false(1, numel(imgIDs{1}));
                     wellIdxs(wellPosition) = true;
                     wellIdx = repmat({wellIdxs}, length(imgIDs),1);
                 end
